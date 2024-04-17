@@ -1,0 +1,174 @@
+---
+title: "06_Secondary_Combined_Batch_Association_Analysis"
+author: "Yu Zhang"
+output:
+  md_document:
+    variant: markdown_github
+  html_document: default
+---
+
+```{r Load packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(survey)
+library(readxl)
+```
+
+# Read data
+```{r}
+metab_file_b1 <- "Processed_metab_b1_updated.RDS"
+metab_file_b2 <- "Processed_metab_b2_updated.RDS"
+pheno_file <- "Processed_pheno.RDS"
+
+metab_b1 <- readRDS(metab_file_b1)
+metab_b2 <- readRDS(metab_file_b2)
+pheno <- readRDS(pheno_file)
+
+all(colnames(metab_b1) == colnames(metab_b2))
+col_chems <- setdiff(1:ncol(metab_b1), grep("SOL_ID", colnames(metab_b1)))
+colnames(metab_b1)[col_chems] <- colnames(metab_b2)[col_chems] <- paste0("chem_", colnames(metab_b1)[col_chems])
+```
+
+# rank-normalize metabolite values and combine batches
+
+```{r}
+chem_columns <- grep("chem", colnames(metab_b1), value = TRUE)
+
+rankNorm <- function(x) {
+  qnorm((rank(x, ties.method = "random", na.last = "keep") - 0.5) / length(!is.na(x)))
+}
+
+set.seed(89)
+for (i in 1:length(chem_columns)) {
+  chem_i <- chem_columns[i]
+  metab_b1[, chem_i] <- rankNorm(metab_b1[, chem_i])
+  metab_b2[, chem_i] <- rankNorm(metab_b2[, chem_i])
+}
+
+metab_comb <- rbind(metab_b1, metab_b2)
+```
+
+# Merge phenotypes with metabolites
+```{r, warning=FALSE}
+pheno$Sleep_Duration <- pheno$SLPDUR
+pheno$OSA <- ifelse(pheno$slpa54gt5 == 1, 1, 0)
+pheno$SLEA8 <- as.numeric(pheno$SLEA8)
+pheno$Sleep_Med_Use <- pheno$SLEA8
+pheno$shift_work <- ifelse(pheno$OCEA13 %in% c("2", "3", "4", "5", "6"), 1, 0)
+cog <- read.csv("20240205_global_cog_base_and_inca.csv", row.names = 1)
+pheno <- merge(pheno, cog, by = "ID")
+cog <- read.csv("sol_cognitive_cov_20210408.csv")
+cog <- cog[c("ID", "MCI")]
+pheno <- merge(pheno, cog, by = "ID")
+pheno$COG <- pheno$global_cog_score
+pheno$COG_Change <- pheno$global_cog_score_change
+
+exposures <- c("Insomnia", "WHIIRS", "SLEA4", "SLEA5", "SLEA6", "SLEA7",
+               "Sleep_Duration", "OSA", "Sleep_Med_Use", "shift_work",
+               "COG", "COG_Change", "MCI")
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+
+covariates <- list(
+  M1 = c("AGE", "GENDER", "CENTER", "Background"),
+  M2 = c("AGE", "GENDER", "CENTER", "Background", "HYPERTENSION", "DIABETES2_INDICATOR"),
+  M3 = c("AGE", "GENDER", "CENTER", "Background", "HYPERTENSION", "DIABETES2_INDICATOR", "AHEI2010", "CIGARETTE_USE", "ALCOHOL_USE"),
+  M1_nomed = c("AGE_nomed", "GENDER", "CENTER", "Background")
+)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+dat_comb <- merge(pheno, metab_comb, by = "SOL_ID", all = TRUE)
+```
+
+
+# Association Analysis
+```{r}
+ass_result <- list()
+reped_chem <- c("chem_100000010", "chem_100001083")
+
+for (batch in c("comb")) {
+  for (exposure in exposures) {
+    dat_comb$keep <- ifelse(!is.na(dat_comb[[exposure]]) & !is.na(dat_comb$chem_35), 1, 0)
+    if (batch == "comb") {
+      survey_base <- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_comb
+      )
+    }
+
+    survey_base <- subset(survey_base, keep == 1)
+
+    for (model in c("M1", "M2", "M3", "M1_nomed")) {
+      if (exposure == "Sleep_Med_Use" & model == "M1_nomed") {
+        next
+      }
+      res_list <- vector(mode = "list", length = length(chem_columns))
+
+      for (i in 1:length(reped_chem)) {
+        chem_i <- reped_chem[i]
+
+        model_formula_i <- paste0(chem_i, " ~ ", exposure, "+", paste(covariates[[model]], collapse = "+"))
+
+        mod_i <- svyglm(as.formula(model_formula_i),
+          design = survey_base,
+          na.action = na.omit,
+          family = "gaussian"
+        )
+
+        assoc_i <- summary(mod_i)$coef[exposure, ]
+
+        res_list[[i]] <- data.frame(
+          Chem_ID = chem_i,
+          n = nrow(model.matrix(mod_i)),
+          Est = assoc_i["Estimate"],
+          SE = assoc_i["Std. Error"],
+          pval = assoc_i["Pr(>|t|)"]
+        )
+      }
+
+      res_exposures <- do.call(rbind, res_list)
+      res_exposures$FDR_p <- p.adjust(res_exposures$pval, "BH")
+
+      name <- paste0(exposure, "_", batch, "_", model)
+
+      ass_result[[name]] <- res_exposures
+    }
+  }
+}
+```
+
+
+# Table
+```{r}
+combined_df <- do.call(rbind, lapply(names(ass_result), function(name) {
+  df <- ass_result[[name]]
+  df$Model <- name
+  return(df)
+}))
+
+rownames(combined_df) <- NULL
+
+metab_batch2_file <- file.path("batch2_data.xlsx")
+metabolites_info_sheet_name <- "metabolites.info"
+
+metab_info <- as.data.frame(read_excel(metab_batch2_file, sheet = metabolites_info_sheet_name))
+metab_info$CHEM_ID <- paste0("chem_", metab_info$CHEM_ID)
+metab_info <- metab_info[,c("CHEM_ID","CHEMICAL_NAME", "HMDB", "KEGG")]
+names(metab_info)[1] <- "Chem_ID"
+
+merged_results <- lapply(ass_result, function(df) merge(df, metab_info, by = "Chem_ID"))
+
+combined_df <- do.call(rbind, lapply(names(merged_results), function(name) {
+  df <- merged_results[[name]]
+  df$Model <- name
+  return(df)
+}))
+
+
+combined_df <- subset(combined_df, select = -Chem_ID)
+combined_df <- combined_df[c(6:9,1:5)]
+print(combined_df)
+```
+

@@ -12,7 +12,7 @@
 <meta name="author" content="Yu Zhang" />
 
 
-<title>4_insomnia_MRS_development</title>
+<title>04_Primary_MRS_Analysis</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -349,95 +349,233 @@ display: none;
 
 
 
-<h1 class="title toc-ignore">4_insomnia_MRS_development</h1>
+<h1 class="title toc-ignore">04_Primary_MRS_Analysis</h1>
 <h4 class="author">Yu Zhang</h4>
 
 </div>
 
 
 <pre class="r"><code>library(tidyverse)
-library(survey)
-library(readxl)</code></pre>
-<div id="reading-data" class="section level1">
-<h1>Reading Data</h1>
-<pre class="r"><code>exposures &lt;- c(&quot;Insomnia&quot;, &quot;WHIIRS&quot;)
+library(readxl)
+library(glmnet)
+library(survey)</code></pre>
+<div id="functions" class="section level1">
+<h1>Functions</h1>
+<div id="sol-association-analysis-function" class="section level2">
+<h2>SOL Association Analysis FUnction</h2>
+<pre class="r"><code>sol_association_analysis &lt;- function(pheno, mrs_df, id_col, outcome, cov_names, family_type = &quot;gaussian&quot;) {
+  if (family_type == &quot;binomial&quot;) {
+    family_type &lt;- &quot;quasibinomial&quot;
+  }
+  mrsdat &lt;- merge(pheno, mrs_df, by = id_col, all = TRUE)
+  mrsdat &lt;- na.omit(mrsdat)
+  survey &lt;- svydesign(
+    id = ~PSU_ID, strata = ~STRAT,
+    weights = ~WEIGHT_FINAL_NORM_OVERALL,
+    data = mrsdat
+  )
+  mod &lt;- svyglm(as.formula(paste(outcome, &quot;~&quot;, paste0(outcome, &quot;_MRS&quot;), &quot;+&quot;, paste(cov_names, collapse = &quot; + &quot;))),
+    design = survey,
+    na.action = na.omit,
+    family = family_type
+  )
+  return(mod)
+}</code></pre>
+</div>
+<div id="lasso-function" class="section level2">
+<h2>LASSO function</h2>
+<pre class="r"><code>lasso_selected &lt;- function(data, chem_columns, outcome, family_var) {
+  if (family_var == &quot;binomial&quot;) {
+    type_var &lt;- &quot;class&quot;
+  } else {
+    type_var &lt;- &quot;mse&quot;
+  }
 
-metab_file_b1 &lt;- &quot;Processed_metab_b1.RDS&quot;
-metab_file_b2 &lt;- &quot;Processed_metab_b2.RDS&quot;
+  x &lt;- model.matrix(as.formula(paste(outcome, &quot;~&quot;, paste(c(covariates, chem_columns), collapse = &quot;+&quot;))), data = data)
+  y &lt;- data[, outcome]
+
+  # apply penalty only on metabolites and not on other variables
+  n_chem &lt;- length(chem_columns)
+  p.fac &lt;- c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+
+  # CV
+  set.seed(1997)
+  kcvlasso &lt;- cv.glmnet(x, y,
+    nfolds = 5,
+    family = family_var,
+    type.measure = type_var,
+    penalty.factor = p.fac
+  )
+
+  ind_min &lt;- which.min(kcvlasso$cvm)
+  selected_lambda &lt;- kcvlasso$lambda[ind_min]
+
+  # lasso without cross validation
+  set.seed(1997)
+  lasso &lt;- glmnet(x, y,
+    lambda = selected_lambda,
+    family = family_var,
+    type.measure = type_var,
+    penalty.factor = p.fac
+  )
+
+  lasso_beta &lt;- lasso$beta
+  mrs_coefs &lt;- lasso_beta[grep(&quot;chem&quot;, rownames(lasso_beta)), &quot;s0&quot;]
+  mrs_coefs &lt;- mrs_coefs[which(mrs_coefs != 0)]
+
+  return(mrs_coefs)
+}</code></pre>
+</div>
+<div id="mrs-construction-function" class="section level2">
+<h2>MRS Construction Function</h2>
+<pre class="r"><code>compute_mrs &lt;- function(dataset, coef_set) {
+  row.names(dataset) &lt;- dataset$SOL_ID
+  tmp &lt;- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) &lt;- outcome
+  tmp &lt;- data.frame(tmp)
+  tmp$SOL_ID &lt;- rownames(tmp)
+  mrs &lt;- tmp
+  row.names(mrs) &lt;- NULL
+  return(mrs)
+}</code></pre>
+</div>
+</div>
+<div id="read-data" class="section level1">
+<h1>Read data</h1>
+<pre class="r"><code>metab_file_b1 &lt;- &quot;Processed_metab_b1_updated.RDS&quot;
+metab_file_b2 &lt;- &quot;Processed_metab_b2_updated.RDS&quot;
 pheno_file &lt;- &quot;Processed_pheno.RDS&quot;
 
 metab_b1 &lt;- readRDS(metab_file_b1)
 metab_b2 &lt;- readRDS(metab_file_b2)
 pheno &lt;- readRDS(pheno_file)
 
-col_chems &lt;- setdiff(1:ncol(metab_b1), grep(&quot;SOL_ID&quot;, colnames(metab_b1)))
-colnames(metab_b1)[col_chems] &lt;- colnames(metab_b2)[col_chems] &lt;- paste0(&quot;chem_&quot;, colnames(metab_b1)[col_chems])
+all(colnames(metab_b1) == colnames(metab_b2))</code></pre>
+<pre><code>## [1] TRUE</code></pre>
+<pre class="r"><code>col_chems &lt;- setdiff(1:ncol(metab_b1), grep(&quot;SOL_ID&quot;, colnames(metab_b1)))
+colnames(metab_b1)[col_chems] &lt;- colnames(metab_b2)[col_chems] &lt;- paste0(&quot;chem_&quot;, colnames(metab_b1)[col_chems])</code></pre>
+</div>
+<div id="rank-normalize-metabolite-values" class="section level1">
+<h1>rank-normalize metabolite values</h1>
+<pre class="r"><code>rankNorm &lt;- function(x) {
+  qnorm((rank(x, ties.method = &quot;random&quot;, na.last = &quot;keep&quot;) - 0.5) / length(!is.na(x)))
+}
 
-covariates &lt;- c(&quot;AGE&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;)
+chem_columns &lt;- grep(&quot;chem&quot;, colnames(metab_b1), value = TRUE)
 
+set.seed(89)
+for (i in 1:length(chem_columns)) {
+  chem_i &lt;- chem_columns[i]
+  metab_b1[, chem_i] &lt;- rankNorm(metab_b1[, chem_i])
+
+  metab_b2[, chem_i] &lt;- rankNorm(metab_b2[, chem_i])
+}</code></pre>
+</div>
+<div id="define-variables-and-merge-phenotype-with-metabolites" class="section level1">
+<h1>Define variables and merge phenotype with metabolites</h1>
+<pre class="r"><code>covariates &lt;- c(&quot;AGE&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;)
 design_vars &lt;- c(&quot;ID&quot;, &quot;STRAT&quot;, &quot;PSU_ID&quot;, &quot;WEIGHT_FINAL_NORM_OVERALL&quot;)
 
-outcome &lt;- &quot;Insomnia&quot;
+dat_b1 &lt;- merge(pheno, metab_b1, by = &quot;SOL_ID&quot;, all.y = TRUE)
 
-pheno &lt;- pheno[,c(design_vars, outcome, covariates)]
-pheno &lt;- pheno[!duplicated(pheno$ID), ]
+##############################
+####### Outcome Define #######
 
-pheno$SOL_ID &lt;- as.character(pheno$ID)
+outcomes &lt;- c(&quot;Insomnia&quot;, &quot;WHIIRS&quot;)
+families &lt;- c(&quot;binomial&quot;, &quot;gaussian&quot;)
 
-dat_b1 &lt;- merge(pheno, metab_b1, by = &quot;SOL_ID&quot;, all = TRUE)
-dat_b2 &lt;- merge(pheno, metab_b2, by = &quot;SOL_ID&quot;, all = TRUE)
-
-dat_b1$keep &lt;- ifelse(!is.na(dat_b1[[exposure]]) &amp; !is.na(dat_b1$chem_35), 1, 0)
-dat_b2$keep &lt;- ifelse(!is.na(dat_b2[[exposure]]) &amp; !is.na(dat_b2$chem_35), 1, 0)</code></pre>
+##############################
+##############################</code></pre>
 </div>
-<div id="mrs-development-using-batch-1" class="section level1">
-<h1>MRS Development Using Batch 1</h1>
-<pre class="r"><code>dat_lasso &lt;- subset(dat_b1, keep == 1)
-x &lt;- model.matrix(as.formula(paste(outcome, &quot;~&quot;, paste(setdiff(names(dat_lasso), c(&quot;SOL_ID&quot;, outcome)), collapse = &quot;+&quot;))), data = dat_lasso)
+<div id="mrs-coefficients-generation" class="section level1">
+<h1>MRS Coefficients Generation</h1>
+<pre class="r"><code>coef_list &lt;- list()
+b1_sample_size &lt;- list()
+metabolite_num &lt;- list()
 
-y &lt;- data_imputation[,outcome]
-
-n_met &lt;- length(col_chems)
-p.fac &lt;- c(rep(0, ncol(x) - n_met), rep(1, n_met))
-
-set.seed(123)
-kcvlasso &lt;- cv.glmnet(x, y, nfolds = 10,
-                          family = &quot;binomial&quot;,
-                          type.measure = &quot;class&quot;,
-                          penalty.factor = p.fac)
-
-ind_min &lt;- which.min(kcvlasso$cvm)
-selected_lambda &lt;- kcvlasso$lambda[ind_min]
-
-set.seed(123)
-lasso &lt;- cv.glmnet(x, y, lambda = selected_lambda,
-                          family = &quot;binomial&quot;,
-                          type.measure = &quot;class&quot;,
-                          penalty.factor = p.fac)
-
-lasso_beta &lt;- lasso$beta
-mrs_coefs &lt;- lasso_beta[grep(&quot;chem&quot;, rownames(lasso_beta)), &quot;s0&quot;]
-mrs_coefs &lt;- mrs_coefs[which(mrs_coefs != 0)]</code></pre>
+for (i in seq_along(outcomes)) {
+  outcome &lt;- outcomes[i]
+  family_var &lt;- families[i]
+  dat_b1_cur &lt;- dat_b1[, c(&quot;SOL_ID&quot;, outcome, covariates, chem_columns)]
+  dat_b1_cur &lt;- dat_b1_cur[complete.cases(dat_b1_cur), ]
+  mrs_coefs &lt;- lasso_selected(dat_b1_cur, chem_columns, outcome, family_var)
+  coef_list[[outcome]] &lt;- mrs_coefs
+  b1_sample_size[[outcome]] &lt;- nrow(dat_b1_cur)
+  cat(&quot;There are &quot;, length(mrs_coefs), &quot; metablites selected into the MRS for&quot;, outcome, &quot;\n&quot;)
+  metabolite_num[[outcome]] &lt;- length(mrs_coefs)
+}</code></pre>
+<pre><code>## There are  76  metablites selected into the MRS for Insomnia 
+## There are  68  metablites selected into the MRS for WHIIRS</code></pre>
 </div>
-<div id="mrs-construction-in-batch-2" class="section level1">
-<h1>MRS Construction in Batch 2</h1>
-<pre class="r"><code>row.names(metab_b2) &lt;- metab_b2$SOL_ID
-tmp &lt;- as.matrix(metab_b2[, names(mrs_coefs)]) %*% mrs_coefs
-tmp &lt;- scale(tmp)
-colnames(tmp) &lt;- paste0(outcome, &quot;_MRS&quot;)
-tmp &lt;- data.frame(tmp)
-tmp$SOL_ID &lt;- rownames(tmp)
-mrs_score &lt;- tmp
-row.names(mrs_score) &lt;- NULL</code></pre>
+<div id="mrs-construction" class="section level1">
+<h1>MRS Construction</h1>
+<pre class="r"><code>mrs_list &lt;- list()
+
+for (i in seq_along(outcomes)) {
+  outcome &lt;- outcomes[i]
+  mrs_coefs &lt;- coef_list[[outcome]]
+  mrs &lt;- compute_mrs(metab_b2, mrs_coefs)
+  mrs[, 1] &lt;- as.vector(scale(mrs[, 1]))
+  colnames(mrs)[1] &lt;- paste0(outcome, &quot;_MRS&quot;)
+  mrs_list[[outcome]] &lt;- mrs
+}</code></pre>
 </div>
-<div id="association-analysis" class="section level1">
-<h1>Association Analysis</h1>
-<p>```{, eval=FALSEr} survey_base &lt;- svydesign( id = ~PSU_ID, strata
-= ~STRAT, weights = ~WEIGHT_FINAL_NORM_OVERALL, data = dat_b2 )
-survey_base &lt;- subset(survey_base, keep == 1)</p>
-<p>mod &lt;- svyglm(as.formula(paste(outcome, “~”, paste0(outcome,
-“_MRS”), “+”, paste(covariates, collapse = ” + “))), design =
-survey_base, na.action = na.omit, family = family_type) ```</p>
+<div id="association-test" class="section level1">
+<h1>Association Test</h1>
+<pre class="r"><code>result_list &lt;- list()
+
+for (i in seq_along(outcomes)) {
+  outcome &lt;- outcomes[i]
+  family_var &lt;- families[i]
+  mrs &lt;- mrs_list[[outcome]]
+  mod &lt;- sol_association_analysis(
+    pheno = pheno, mrs_df = mrs, id_col = &quot;SOL_ID&quot;, outcome = outcome,
+    cov_names = covariates, family_type = family_var
+  )
+
+  summary_mod &lt;- summary(mod)
+  estimate_first_covariate &lt;- summary_mod$coefficients[2, &quot;Estimate&quot;]
+  stderr_first_covariate &lt;- summary_mod$coefficients[2, &quot;Std. Error&quot;]
+  pvalue_first_covariate &lt;- summary_mod$coefficients[2, &quot;Pr(&gt;|t|)&quot;]
+  ci_low &lt;- estimate_first_covariate - (1.96 * stderr_first_covariate)
+  ci_high &lt;- estimate_first_covariate + (1.96 * stderr_first_covariate)
+  dat_b2 &lt;- merge(metab_b2, pheno, by = &quot;SOL_ID&quot;)
+  dat_b2 &lt;- dat_b2[!is.na(dat_b2[[outcome]]), ]
+  size_b2 &lt;- nrow(dat_b2)
+  
+  if (family_var == &quot;binomial&quot;) {
+    mod_df &lt;- data.frame(
+      Exposures = outcome, Sample_Size = b1_sample_size[[outcome]], Sample_Size_b2 = size_b2, Est = exp(estimate_first_covariate),
+      CI_Lower = exp(ci_low), CI_Upper = exp(ci_high),
+      P_Value = pvalue_first_covariate, Metabolites = metabolite_num[[outcome]]
+    )
+  } else {
+    mod_df &lt;- data.frame(
+      Exposures = outcome, Sample_Size = b1_sample_size[[outcome]], Sample_Size_b2 = size_b2, Est = estimate_first_covariate,
+      CI_Lower = ci_low, CI_Upper = ci_high,
+      P_Value = pvalue_first_covariate, Metabolites = metabolite_num[[outcome]]
+    )
+  }
+  result_list[[outcome]] &lt;- mod_df
+}</code></pre>
+</div>
+<div id="table" class="section level1">
+<h1>Table</h1>
+<pre class="r"><code>tab_temp &lt;- do.call(rbind, result_list)
+tab_report &lt;- tab_temp %&gt;%
+  mutate(
+    Est = round(Est, 4),
+    CI = paste0(&quot;[&quot;, round(CI_Lower, 4), &quot;, &quot;, round(CI_Upper, 4), &quot;]&quot;),
+    P_Value = sprintf(&quot;%.4e&quot;, P_Value)
+  ) %&gt;%
+  select(Exposures, Sample_Size, Sample_Size_b2, Est, CI, P_Value, Metabolites)
+print(tab_report)</code></pre>
+<pre><code>##          Exposures Sample_Size Sample_Size_b2    Est               CI
+## Insomnia  Insomnia        3895           2121 1.2726 [1.0615, 1.5256]
+## WHIIRS      WHIIRS        3895           2121 0.9420   [0.466, 1.418]
+##             P_Value Metabolites
+## Insomnia 9.5291e-03          76
+## WHIIRS   1.2311e-04          68</code></pre>
 </div>
 
 

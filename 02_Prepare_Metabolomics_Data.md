@@ -1,6 +1,5 @@
 ``` r
 library(tidyverse)
-library(survey)
 library(readxl)
 ```
 
@@ -13,16 +12,11 @@ metabolites_info_sheet_name <- "metabolites.info"
 ```
 
 ``` r
-# subset batch 2 to have the same metabolites as batch 1:
 metab_vals_batch1 <- read_excel("2batch_combined_data_V1_only.xlsx", sheet = batch1_metab_sheet_name)
 metab_vals_batch2 <- read_excel("batch2_data.xlsx", sheet = batch2_metab_sheet_name)
 
 metab_vals_batch2 <- metab_vals_batch2[, colnames(metab_vals_batch1)]
 
-
-# we already made sure we have the same metablites in both batches. 
-# now we need to add person IDs to these:
-# metab_vals_batch1, metab_vals_batch2
 sample_info_batch1 <- read_excel("2batch_combined_data_V1_only.xlsx", sheet = batch1_sample_info_sheet_name)
 sample_info_batch2 <- read_excel("batch2_data.xlsx", sheet = batch2_sample_info_sheet_name)
 
@@ -30,15 +24,9 @@ metab_vals_batch1 <- merge(metab_vals_batch1,
                            sample_info_batch1[,c("PARENT_SAMPLE_NAME", "SOL_ID")], 
                            by = "PARENT_SAMPLE_NAME")
 
-cat("The number of samples in batch 1 is ", nrow(metab_vals_batch1), "\n")
-cat("and the number of individuals in batch 1 is ", length(unique(metab_vals_batch1$SOL_ID)), "\n") 
-
 metab_vals_batch2 <- merge(metab_vals_batch2, 
                            sample_info_batch2[,c("PARENT_SAMPLE_NAME", "SOL_ID")], 
                            by = "PARENT_SAMPLE_NAME")
-
-cat("The number of samples in batch 2 is ", nrow(metab_vals_batch2), "\n")
-cat("and the number of individuals in batch 2 is ", length(unique(metab_vals_batch2$SOL_ID)), "\n") 
 
 set.seed(1997)
 random_index_b1 <- data.frame(index = 1:nrow(metab_vals_batch1 ), SOL_ID = metab_vals_batch1$SOL_ID)
@@ -60,11 +48,6 @@ for (id in unique(random_index_b2$SOL_ID)){
   random_index_b2 <- random_index_b2[-setdiff(row_inds, selected_ind),]
 }
 metab_vals_batch2 <- metab_vals_batch2[random_index_b2$index,]
-# we now have a batch2 data set with a single sample per 1 person. 
-# now, remove overlap with batch1 data:
-# first, how many people overlap?
-cat("There are ", length(intersect(metab_vals_batch1$SOL_ID, metab_vals_batch2$SOL_ID)), 
-        "individuals that overlap betweeen batches")
 
 metab_vals_batch2 <- metab_vals_batch2[-which(is.element(metab_vals_batch2$SOL_ID, metab_vals_batch1$SOL_ID)),]
 ```
@@ -72,6 +55,11 @@ metab_vals_batch2 <- metab_vals_batch2[-which(is.element(metab_vals_batch2$SOL_I
 ``` r
 miss_prop <- 0.25
 all(colnames(metab_vals_batch1) == colnames(metab_vals_batch2))
+```
+
+    ## [1] TRUE
+
+``` r
 missing_prop <- data.frame(CHEM_ID = colnames(metab_vals_batch1)[-1], 
                            missing_prop_batch1 = NA, 
                            missing_prop_batch2 = NA)
@@ -79,14 +67,10 @@ missing_prop <- data.frame(CHEM_ID = colnames(metab_vals_batch1)[-1],
 missing_prop$missing_prop_batch1 <- apply(metab_vals_batch1, 2, function(x){mean(is.na(x))})[-1]
 missing_prop$missing_prop_batch2 <- apply(metab_vals_batch2, 2, function(x){mean(is.na(x))})[-1]
 
-cat("There are ", sum(missing_prop$missing_prop_batch1 < miss_prop  & missing_prop$missing_prop_batch2 < miss_prop ), 
-        "metabolites with up to 25% missingness in both batches")
-
 inds_acceptable <- which(missing_prop$missing_prop_batch1 < miss_prop  & missing_prop$missing_prop_batch2 < miss_prop )
 CHEM_ID_keep <- missing_prop$CHEM_ID[inds_acceptable]
 CHEM_ID_keep <- setdiff(CHEM_ID_keep, "SOL_ID")
 
-# just keep these metabolites: 
 metab_vals_batch1 <- metab_vals_batch1[,c("SOL_ID", CHEM_ID_keep)]
 metab_vals_batch2 <- metab_vals_batch2[,c("SOL_ID", CHEM_ID_keep)]
 
@@ -107,23 +91,7 @@ for (i in 1:length(CHEM_ID_keep)){
   
 }
 
-#saveRDS(metab_vals_batch1, file = "Processed_metab_b1.RDS")
+#saveRDS(metab_vals_batch1, file = "Processed_metab_b1_updated.RDS")
 
-#saveRDS(metab_vals_batch2, file = "Processed_metab_b2.RDS")
-```
-
-``` r
-rankNorm <- function(x){
-  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
-}
-
-chem_column_inds <- setdiff(1:ncol(metab_vals_batch1), grep("SOL_ID", colnames(metab_vals_batch2)))
-
-for (i in chem_column_inds){
-  metab_vals_batch1[,i] <- rankNorm(metab_vals_batch1[,i])
-  metab_vals_batch2[,i] <- rankNorm(metab_vals_batch2[,i])
-}
-
-metab <- rbind(metab_vals_batch1, metab_vals_batch2)
-#saveRDS(metab, file = "Combined_metab_b1_b2.RDS")
+#saveRDS(metab_vals_batch2, file = "Processed_metab_b2_updated.RDS")
 ```

@@ -12,7 +12,7 @@
 <meta name="author" content="Yu Zhang" />
 
 
-<title>2_prepare_metablomics_data</title>
+<title>01_Prepare_Phenotype</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -349,127 +349,46 @@ display: none;
 
 
 
-<h1 class="title toc-ignore">2_prepare_metablomics_data</h1>
+<h1 class="title toc-ignore">01_Prepare_Phenotype</h1>
 <h4 class="author">Yu Zhang</h4>
 
 </div>
 
 
-<pre class="r"><code>library(tidyverse)
-library(survey)
-library(readxl)</code></pre>
-<pre class="r"><code>batch1_metab_sheet_name &lt;- &quot;data&quot;
-batch2_metab_sheet_name &lt;- &quot;batch2_batchnormalized_v1&quot;
-batch1_sample_info_sheet_name &lt;- &quot;sample.info&quot;
-batch2_sample_info_sheet_name &lt;- &quot;sample.info_batch2_v1&quot;
-metabolites_info_sheet_name &lt;- &quot;metabolites.info&quot;</code></pre>
-<pre class="r"><code># subset batch 2 to have the same metabolites as batch 1:
-metab_vals_batch1 &lt;- read_excel(&quot;2batch_combined_data_V1_only.xlsx&quot;, sheet = batch1_metab_sheet_name)
-metab_vals_batch2 &lt;- read_excel(&quot;batch2_data.xlsx&quot;, sheet = batch2_metab_sheet_name)
+<pre class="r"><code>library(tidyverse)</code></pre>
+<div id="set-path" class="section level1">
+<h1>Set path</h1>
+<pre class="r"><code>base_path &lt;- &quot;~/OneDrive-BethIsraelLaheyHealth&quot;
+project_folder &lt;- &quot;2022_Insomnia_metabolites_project&quot;
+# phenotype_file &lt;- file.path(base_path, project_folder, &quot;Phenotypes/metsleep_covariates_20200715.csv&quot;)
+phenotype_file &lt;- &quot;metsleep_covariates_20200715.csv&quot;
 
-metab_vals_batch2 &lt;- metab_vals_batch2[, colnames(metab_vals_batch1)]
+result_folder &lt;- &quot;Results&quot;
 
+# metab_data_file &lt;- file.path(base_path, &quot;metabolites info/SOL_with_Batch2/2batch_combined_data_V1_only.xlsx&quot;)</code></pre>
+</div>
+<div id="read-and-process-phenotype-data" class="section level1">
+<h1>Read and process phenotype data</h1>
+<pre class="r"><code>dat &lt;- read.csv(phenotype_file)
 
-# we already made sure we have the same metablites in both batches. 
-# now we need to add person IDs to these:
-# metab_vals_batch1, metab_vals_batch2
-sample_info_batch1 &lt;- read_excel(&quot;2batch_combined_data_V1_only.xlsx&quot;, sheet = batch1_sample_info_sheet_name)
-sample_info_batch2 &lt;- read_excel(&quot;batch2_data.xlsx&quot;, sheet = batch2_sample_info_sheet_name)
+dat$Insomnia &lt;- ifelse(dat$WHIIRS &gt;=9, 1, 0)
+dat$CENTER &lt;- factor(dat$CENTER)
+dat$GENDER &lt;- factor(dat$GENDER)
+dat$Background &lt;- factor(dat$BKGRD1_C7)
 
-metab_vals_batch1 &lt;- merge(metab_vals_batch1, 
-                           sample_info_batch1[,c(&quot;PARENT_SAMPLE_NAME&quot;, &quot;SOL_ID&quot;)], 
-                           by = &quot;PARENT_SAMPLE_NAME&quot;)
+dat$SLEA4 &lt;- as.numeric(as.character(dat$SLEA4))
+dat$SLEA5 &lt;- as.numeric(as.character(dat$SLEA5))
+dat$SLEA6 &lt;- as.numeric(as.character(dat$SLEA6))
+dat$SLEA7 &lt;- as.numeric(as.character(dat$SLEA7))
 
-cat(&quot;The number of samples in batch 1 is &quot;, nrow(metab_vals_batch1), &quot;\n&quot;)
-cat(&quot;and the number of individuals in batch 1 is &quot;, length(unique(metab_vals_batch1$SOL_ID)), &quot;\n&quot;) 
-
-metab_vals_batch2 &lt;- merge(metab_vals_batch2, 
-                           sample_info_batch2[,c(&quot;PARENT_SAMPLE_NAME&quot;, &quot;SOL_ID&quot;)], 
-                           by = &quot;PARENT_SAMPLE_NAME&quot;)
-
-cat(&quot;The number of samples in batch 2 is &quot;, nrow(metab_vals_batch2), &quot;\n&quot;)
-cat(&quot;and the number of individuals in batch 2 is &quot;, length(unique(metab_vals_batch2$SOL_ID)), &quot;\n&quot;) 
-
-set.seed(1997)
-random_index_b1 &lt;- data.frame(index = 1:nrow(metab_vals_batch1 ), SOL_ID = metab_vals_batch1$SOL_ID)
-for (id in unique(random_index_b1$SOL_ID)){
-  row_inds &lt;- which(random_index_b1$SOL_ID == id)
-  if (length(row_inds) == 1) next
-  selected_ind &lt;- sample(row_inds, 1)
-  random_index_b1 &lt;- random_index_b1[-setdiff(row_inds, selected_ind),]
-}
-metab_vals_batch1 &lt;- metab_vals_batch1[random_index_b1$index,]
-
-
-
-random_index_b2 &lt;- data.frame(index = 1:nrow(metab_vals_batch2 ), SOL_ID = metab_vals_batch2$SOL_ID)
-for (id in unique(random_index_b2$SOL_ID)){
-  row_inds &lt;- which(random_index_b2$SOL_ID == id)
-  if (length(row_inds) == 1) next
-  selected_ind &lt;- sample(row_inds, 1)
-  random_index_b2 &lt;- random_index_b2[-setdiff(row_inds, selected_ind),]
-}
-metab_vals_batch2 &lt;- metab_vals_batch2[random_index_b2$index,]
-# we now have a batch2 data set with a single sample per 1 person. 
-# now, remove overlap with batch1 data:
-# first, how many people overlap?
-cat(&quot;There are &quot;, length(intersect(metab_vals_batch1$SOL_ID, metab_vals_batch2$SOL_ID)), 
-        &quot;individuals that overlap betweeen batches&quot;)
-
-metab_vals_batch2 &lt;- metab_vals_batch2[-which(is.element(metab_vals_batch2$SOL_ID, metab_vals_batch1$SOL_ID)),]</code></pre>
-<pre class="r"><code>miss_prop &lt;- 0.25
-all(colnames(metab_vals_batch1) == colnames(metab_vals_batch2))
-missing_prop &lt;- data.frame(CHEM_ID = colnames(metab_vals_batch1)[-1], 
-                           missing_prop_batch1 = NA, 
-                           missing_prop_batch2 = NA)
-
-missing_prop$missing_prop_batch1 &lt;- apply(metab_vals_batch1, 2, function(x){mean(is.na(x))})[-1]
-missing_prop$missing_prop_batch2 &lt;- apply(metab_vals_batch2, 2, function(x){mean(is.na(x))})[-1]
-
-cat(&quot;There are &quot;, sum(missing_prop$missing_prop_batch1 &lt; miss_prop  &amp; missing_prop$missing_prop_batch2 &lt; miss_prop ), 
-        &quot;metabolites with up to 25% missingness in both batches&quot;)
-
-inds_acceptable &lt;- which(missing_prop$missing_prop_batch1 &lt; miss_prop  &amp; missing_prop$missing_prop_batch2 &lt; miss_prop )
-CHEM_ID_keep &lt;- missing_prop$CHEM_ID[inds_acceptable]
-CHEM_ID_keep &lt;- setdiff(CHEM_ID_keep, &quot;SOL_ID&quot;)
-
-# just keep these metabolites: 
-metab_vals_batch1 &lt;- metab_vals_batch1[,c(&quot;SOL_ID&quot;, CHEM_ID_keep)]
-metab_vals_batch2 &lt;- metab_vals_batch2[,c(&quot;SOL_ID&quot;, CHEM_ID_keep)]
-
-metab_mins_batch1 &lt;- apply(metab_vals_batch1[,CHEM_ID_keep], 2, function(x){min(x, na.rm = TRUE)})
-metab_mins_batch2 &lt;- apply(metab_vals_batch2[,CHEM_ID_keep], 2, function(x){min(x, na.rm = TRUE)})
-
-for (i in 1:length(CHEM_ID_keep)){
-  cur_chem &lt;- CHEM_ID_keep[i]
-  batch1_mis_inds_cur_chem &lt;- which(is.na(metab_vals_batch1[,cur_chem]))
-  if (length(batch1_mis_inds_cur_chem) &gt; 0){
-    metab_vals_batch1[batch1_mis_inds_cur_chem,cur_chem] &lt;- metab_mins_batch1[cur_chem]/2
-  }
- 
-  batch2_mis_inds_cur_chem &lt;- which(is.na(metab_vals_batch2[,cur_chem]))
-  if (length(batch2_mis_inds_cur_chem) &gt; 0){
-    metab_vals_batch2[batch2_mis_inds_cur_chem,cur_chem] &lt;- metab_mins_batch2[cur_chem]/2
-  } 
-  
-}
-
-#saveRDS(metab_vals_batch1, file = &quot;Processed_metab_b1.RDS&quot;)
-
-#saveRDS(metab_vals_batch2, file = &quot;Processed_metab_b2.RDS&quot;)</code></pre>
-<pre class="r"><code>rankNorm &lt;- function(x){
-  qnorm((rank(x, ties.method = &quot;random&quot;, na.last = &quot;keep&quot;)-0.5)/length(!is.na(x)))
-}
-
-chem_column_inds &lt;- setdiff(1:ncol(metab_vals_batch1), grep(&quot;SOL_ID&quot;, colnames(metab_vals_batch2)))
-
-for (i in chem_column_inds){
-  metab_vals_batch1[,i] &lt;- rankNorm(metab_vals_batch1[,i])
-  metab_vals_batch2[,i] &lt;- rankNorm(metab_vals_batch2[,i])
-}
-
-metab &lt;- rbind(metab_vals_batch1, metab_vals_batch2)
-#saveRDS(metab, file = &quot;Combined_metab_b1_b2.RDS&quot;)</code></pre>
+dat &lt;- dat[!duplicated(dat$ID),]
+dat$SOL_ID  &lt;- as.character(dat$ID)</code></pre>
+</div>
+<div id="save-phenotype-data" class="section level1">
+<h1>Save phenotype data</h1>
+<pre class="r"><code>#saveRDS(dat, &quot;Processed_pheno.RDS&quot;)
+#saveRDS(dat, file.path(base_path, project_folder, result_folder, &quot;Processed_pheno.RDS&quot;))</code></pre>
+</div>
 
 
 

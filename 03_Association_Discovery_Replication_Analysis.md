@@ -1,0 +1,173 @@
+``` r
+library(tidyverse)
+library(survey)
+library(readxl)
+```
+
+# Read data
+
+``` r
+metab_file_b1 <- "Processed_metab_b1_updated.RDS"
+metab_file_b2 <- "Processed_metab_b2_updated.RDS"
+pheno_file <- "Processed_pheno.RDS"
+
+metab_b1 <- readRDS(metab_file_b1)
+metab_b2 <- readRDS(metab_file_b2)
+pheno <- readRDS(pheno_file)
+
+all(colnames(metab_b1) == colnames(metab_b2))
+```
+
+    ## [1] TRUE
+
+``` r
+col_chems <- setdiff(1:ncol(metab_b1), grep("SOL_ID", colnames(metab_b1)))
+colnames(metab_b1)[col_chems] <- colnames(metab_b2)[col_chems] <- paste0("chem_", colnames(metab_b1)[col_chems])
+```
+
+# Merge phenotypes with metabolites
+
+``` r
+exposures <- c("Insomnia", "WHIIRS")
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+
+covariates <- list(
+  M1 = c("AGE", "GENDER", "CENTER", "Background"),
+  M2 = c("AGE", "GENDER", "CENTER", "Background", "HYPERTENSION", "DIABETES2_INDICATOR"),
+  M3 = c("AGE", "GENDER", "CENTER", "Background", "HYPERTENSION", "DIABETES2_INDICATOR", "AHEI2010", "CIGARETTE_USE", "ALCOHOL_USE"),
+  M1_nomed = c("AGE_nomed", "GENDER", "CENTER", "Background")
+)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+dat_b1 <- merge(pheno, metab_b1, by = "SOL_ID", all = TRUE)
+dat_b2 <- merge(pheno, metab_b2, by = "SOL_ID", all = TRUE)
+```
+
+# rank-normalize metabolite values
+
+``` r
+chem_columns <- grep("chem", colnames(dat_b1), value = TRUE)
+
+rankNorm <- function(x) {
+  qnorm((rank(x, ties.method = "random", na.last = "keep") - 0.5) / length(!is.na(x)))
+}
+
+set.seed(89)
+for (i in 1:length(chem_columns)) {
+  chem_i <- chem_columns[i]
+  dat_b1[, chem_i] <- rankNorm(dat_b1[, chem_i])
+
+  dat_b2[, chem_i] <- rankNorm(dat_b2[, chem_i])
+}
+```
+
+# Batch 1 Discovery Analysis
+
+``` r
+ass_result <- list()
+
+for (batch in c("b1")) {
+  for (exposure in exposures) {
+    dat_b1$keep <- ifelse(!is.na(dat_b1[[exposure]]) & !is.na(dat_b1$chem_35), 1, 0)
+    dat_b2$keep <- ifelse(!is.na(dat_b2[[exposure]]) & !is.na(dat_b2$chem_35), 1, 0)
+
+    if (batch == "b1") {
+      survey_base <- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_b1
+      )
+    }
+
+    if (batch == "b2") {
+      survey_base <- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_b2
+      )
+    }
+
+    survey_base <- subset(survey_base, keep == 1)
+
+    for (model in c("M1")) {
+      res_list <- vector(mode = "list", length = length(chem_columns))
+
+      for (i in 1:length(chem_columns)) {
+        chem_i <- chem_columns[i]
+
+        model_formula_i <- paste0(chem_i, " ~ ", exposure, "+", paste(covariates[[model]], collapse = "+"))
+
+        mod_i <- svyglm(as.formula(model_formula_i),
+          design = survey_base,
+          na.action = na.omit,
+          family = "gaussian"
+        )
+
+        assoc_i <- summary(mod_i)$coef[exposure, ]
+
+        res_list[[i]] <- data.frame(
+          chem = chem_i,
+          n = nrow(model.matrix(mod_i)),
+          Est = assoc_i["Estimate"],
+          SE = assoc_i["Std. Error"],
+          pval = assoc_i["Pr(>|t|)"]
+        )
+      }
+
+      res_exposures <- do.call(rbind, res_list)
+      res_exposures$FDR_p <- p.adjust(res_exposures$pval, "BH")
+
+      name <- paste0(exposure, "_", batch, "_", model)
+
+      ass_result[[name]] <- res_exposures
+    }
+  }
+}
+```
+
+# Batch 2 Replication Analysis
+
+``` r
+select_df <- subset(ass_result[["WHIIRS_b1_M1"]], FDR_p < 0.05)
+select_chem <- select_df$chem
+exposure <- "WHIIRS"
+
+survey_base <- svydesign(
+  id = ~PSU_ID, strata = ~STRAT,
+  weights = ~WEIGHT_FINAL_NORM_OVERALL,
+  data = dat_b2
+)
+survey_base <- subset(survey_base, keep == 1)
+
+res_list <- vector(mode = "list", length = length(select_chem))
+
+covariates <- c("AGE", "GENDER", "CENTER", "Background")
+
+for (i in 1:length(select_chem)) {
+  chem_i <- select_chem[i]
+
+  model_formula_i <- paste0(chem_i, " ~ ", exposure, "+", paste(covariates, collapse = "+"))
+
+  mod_i <- svyglm(as.formula(model_formula_i),
+    design = survey_base,
+    na.action = na.omit,
+    family = "gaussian"
+  )
+
+  assoc_i <- summary(mod_i)$coef[2, ]
+
+  res_list[[i]] <- data.frame(
+    chem = chem_i,
+    n = nrow(model.matrix(mod_i)),
+    Est = assoc_i["Estimate"],
+    SE = assoc_i["Std. Error"],
+    pval = assoc_i["Pr(>|t|)"]
+  )
+}
+
+res_exposures_rep <- do.call(rbind, res_list)
+res_exposures_rep$FDR_p <- p.adjust(res_exposures_rep$pval, "BH")
+```

@@ -12,7 +12,7 @@
 <meta name="author" content="Yu Zhang" />
 
 
-<title>3_model_1_discovery_replication_analysis</title>
+<title>03_Association_Discovery_Replication_Analysis</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -349,7 +349,7 @@ display: none;
 
 
 
-<h1 class="title toc-ignore">3_model_1_discovery_replication_analysis</h1>
+<h1 class="title toc-ignore">03_Association_Discovery_Replication_Analysis</h1>
 <h4 class="author">Yu Zhang</h4>
 
 </div>
@@ -358,51 +358,137 @@ display: none;
 <pre class="r"><code>library(tidyverse)
 library(survey)
 library(readxl)</code></pre>
-<div id="reading-data" class="section level1">
-<h1>Reading Data</h1>
-<pre class="r"><code>exposures &lt;- c(&quot;Insomnia&quot;, &quot;WHIIRS&quot;)
-
-metab_file_b1 &lt;- &quot;Processed_metab_b1.RDS&quot;
-metab_file_b2 &lt;- &quot;Processed_metab_b2.RDS&quot;
+<div id="read-data" class="section level1">
+<h1>Read data</h1>
+<pre class="r"><code>metab_file_b1 &lt;- &quot;Processed_metab_b1_updated.RDS&quot;
+metab_file_b2 &lt;- &quot;Processed_metab_b2_updated.RDS&quot;
 pheno_file &lt;- &quot;Processed_pheno.RDS&quot;
 
 metab_b1 &lt;- readRDS(metab_file_b1)
 metab_b2 &lt;- readRDS(metab_file_b2)
 pheno &lt;- readRDS(pheno_file)
 
-col_chems &lt;- setdiff(1:ncol(metab_b1), grep(&quot;SOL_ID&quot;, colnames(metab_b1)))
-colnames(metab_b1)[col_chems] &lt;- colnames(metab_b2)[col_chems] &lt;- paste0(&quot;chem_&quot;, colnames(metab_b1)[col_chems])
+all(colnames(metab_b1) == colnames(metab_b2))</code></pre>
+<pre><code>## [1] TRUE</code></pre>
+<pre class="r"><code>col_chems &lt;- setdiff(1:ncol(metab_b1), grep(&quot;SOL_ID&quot;, colnames(metab_b1)))
+colnames(metab_b1)[col_chems] &lt;- colnames(metab_b2)[col_chems] &lt;- paste0(&quot;chem_&quot;, colnames(metab_b1)[col_chems])</code></pre>
+</div>
+<div id="merge-phenotypes-with-metabolites" class="section level1">
+<h1>Merge phenotypes with metabolites</h1>
+<pre class="r"><code>exposures &lt;- c(&quot;Insomnia&quot;, &quot;WHIIRS&quot;)
 
-covariates &lt;- c(&quot;AGE&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;)
+pheno$AGE_nomed &lt;- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] &lt;- NA
+
+covariates &lt;- list(
+  M1 = c(&quot;AGE&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;),
+  M2 = c(&quot;AGE&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;, &quot;HYPERTENSION&quot;, &quot;DIABETES2_INDICATOR&quot;),
+  M3 = c(&quot;AGE&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;, &quot;HYPERTENSION&quot;, &quot;DIABETES2_INDICATOR&quot;, &quot;AHEI2010&quot;, &quot;CIGARETTE_USE&quot;, &quot;ALCOHOL_USE&quot;),
+  M1_nomed = c(&quot;AGE_nomed&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;)
+)
 
 design_vars &lt;- c(&quot;ID&quot;, &quot;STRAT&quot;, &quot;PSU_ID&quot;, &quot;WEIGHT_FINAL_NORM_OVERALL&quot;)
 
-pheno &lt;- pheno[,c(design_vars, exposures, covariates)]
-pheno &lt;- pheno[!duplicated(pheno$ID), ]
-
-pheno$SOL_ID &lt;- as.character(pheno$ID)
-
 dat_b1 &lt;- merge(pheno, metab_b1, by = &quot;SOL_ID&quot;, all = TRUE)
-dat_b2 &lt;- merge(pheno, metab_b2, by = &quot;SOL_ID&quot;, all = TRUE)
-
-dat_b1$keep &lt;- ifelse(!is.na(dat_b1[[exposure]]) &amp; !is.na(dat_b1$chem_35), 1, 0)
-dat_b2$keep &lt;- ifelse(!is.na(dat_b2[[exposure]]) &amp; !is.na(dat_b2$chem_35), 1, 0)</code></pre>
+dat_b2 &lt;- merge(pheno, metab_b2, by = &quot;SOL_ID&quot;, all = TRUE)</code></pre>
 </div>
-<div id="association-analysis-batch-1-model-1" class="section level1">
-<h1>Association Analysis Batch 1 Model 1</h1>
-<pre class="r"><code>survey_base &lt;- svydesign(
+<div id="rank-normalize-metabolite-values" class="section level1">
+<h1>rank-normalize metabolite values</h1>
+<pre class="r"><code>chem_columns &lt;- grep(&quot;chem&quot;, colnames(dat_b1), value = TRUE)
+
+rankNorm &lt;- function(x) {
+  qnorm((rank(x, ties.method = &quot;random&quot;, na.last = &quot;keep&quot;) - 0.5) / length(!is.na(x)))
+}
+
+set.seed(89)
+for (i in 1:length(chem_columns)) {
+  chem_i &lt;- chem_columns[i]
+  dat_b1[, chem_i] &lt;- rankNorm(dat_b1[, chem_i])
+
+  dat_b2[, chem_i] &lt;- rankNorm(dat_b2[, chem_i])
+}</code></pre>
+</div>
+<div id="batch-1-discovery-analysis" class="section level1">
+<h1>Batch 1 Discovery Analysis</h1>
+<pre class="r"><code>ass_result &lt;- list()
+
+for (batch in c(&quot;b1&quot;)) {
+  for (exposure in exposures) {
+    dat_b1$keep &lt;- ifelse(!is.na(dat_b1[[exposure]]) &amp; !is.na(dat_b1$chem_35), 1, 0)
+    dat_b2$keep &lt;- ifelse(!is.na(dat_b2[[exposure]]) &amp; !is.na(dat_b2$chem_35), 1, 0)
+
+    if (batch == &quot;b1&quot;) {
+      survey_base &lt;- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_b1
+      )
+    }
+
+    if (batch == &quot;b2&quot;) {
+      survey_base &lt;- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_b2
+      )
+    }
+
+    survey_base &lt;- subset(survey_base, keep == 1)
+
+    for (model in c(&quot;M1&quot;)) {
+      res_list &lt;- vector(mode = &quot;list&quot;, length = length(chem_columns))
+
+      for (i in 1:length(chem_columns)) {
+        chem_i &lt;- chem_columns[i]
+
+        model_formula_i &lt;- paste0(chem_i, &quot; ~ &quot;, exposure, &quot;+&quot;, paste(covariates[[model]], collapse = &quot;+&quot;))
+
+        mod_i &lt;- svyglm(as.formula(model_formula_i),
+          design = survey_base,
+          na.action = na.omit,
+          family = &quot;gaussian&quot;
+        )
+
+        assoc_i &lt;- summary(mod_i)$coef[exposure, ]
+
+        res_list[[i]] &lt;- data.frame(
+          chem = chem_i,
+          n = nrow(model.matrix(mod_i)),
+          Est = assoc_i[&quot;Estimate&quot;],
+          SE = assoc_i[&quot;Std. Error&quot;],
+          pval = assoc_i[&quot;Pr(&gt;|t|)&quot;]
+        )
+      }
+
+      res_exposures &lt;- do.call(rbind, res_list)
+      res_exposures$FDR_p &lt;- p.adjust(res_exposures$pval, &quot;BH&quot;)
+
+      name &lt;- paste0(exposure, &quot;_&quot;, batch, &quot;_&quot;, model)
+
+      ass_result[[name]] &lt;- res_exposures
+    }
+  }
+}</code></pre>
+</div>
+<div id="batch-2-replication-analysis" class="section level1">
+<h1>Batch 2 Replication Analysis</h1>
+<pre class="r"><code>select_df &lt;- subset(ass_result[[&quot;WHIIRS_b1_M1&quot;]], FDR_p &lt; 0.05)
+select_chem &lt;- select_df$chem
+exposure &lt;- &quot;WHIIRS&quot;
+
+survey_base &lt;- svydesign(
   id = ~PSU_ID, strata = ~STRAT,
   weights = ~WEIGHT_FINAL_NORM_OVERALL,
-  data = dat_b1
+  data = dat_b2
 )
 survey_base &lt;- subset(survey_base, keep == 1)
 
+res_list &lt;- vector(mode = &quot;list&quot;, length = length(select_chem))
 
+covariates &lt;- c(&quot;AGE&quot;, &quot;GENDER&quot;, &quot;CENTER&quot;, &quot;Background&quot;)
 
-res_list &lt;- vector(mode = &quot;list&quot;, length = length(col_chems))
-
-for (i in 1:length(col_chems)) {
-  chem_i &lt;- col_chems[i]
+for (i in 1:length(select_chem)) {
+  chem_i &lt;- select_chem[i]
 
   model_formula_i &lt;- paste0(chem_i, &quot; ~ &quot;, exposure, &quot;+&quot;, paste(covariates, collapse = &quot;+&quot;))
 
@@ -412,7 +498,7 @@ for (i in 1:length(col_chems)) {
     family = &quot;gaussian&quot;
   )
 
-  assoc_i &lt;- summary(mod_i)$coef[exposure, ]
+  assoc_i &lt;- summary(mod_i)$coef[2, ]
 
   res_list[[i]] &lt;- data.frame(
     chem = chem_i,
@@ -423,12 +509,8 @@ for (i in 1:length(col_chems)) {
   )
 }
 
-res_exposures &lt;- do.call(rbind, res_list)
-res_exposures$FDR_p &lt;- p.adjust(res_exposures$pval, &quot;BH&quot;)
-# write.csv(res_exposures, file = &quot;association_result_m1_b1&quot;)</code></pre>
-</div>
-<div id="replication-analysis-batch-2" class="section level1">
-<h1>Replication Analysis Batch 2</h1>
+res_exposures_rep &lt;- do.call(rbind, res_list)
+res_exposures_rep$FDR_p &lt;- p.adjust(res_exposures_rep$pval, &quot;BH&quot;)</code></pre>
 </div>
 
 

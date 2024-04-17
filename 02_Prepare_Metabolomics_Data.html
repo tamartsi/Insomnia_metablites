@@ -12,7 +12,7 @@
 <meta name="author" content="Yu Zhang" />
 
 
-<title>1_prepare_phenotype</title>
+<title>02_Prepare_Metabolomics_Data</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -349,83 +349,94 @@ display: none;
 
 
 
-<h1 class="title toc-ignore">1_prepare_phenotype</h1>
+<h1 class="title toc-ignore">02_Prepare_Metabolomics_Data</h1>
 <h4 class="author">Yu Zhang</h4>
 
 </div>
 
 
-<pre class="r"><code>library(tidyverse)</code></pre>
-<pre><code>## ── Attaching core tidyverse packages ──────────────────────── tidyverse 2.0.0 ──
-## ✔ dplyr     1.1.2     ✔ readr     2.1.4
-## ✔ forcats   1.0.0     ✔ stringr   1.5.0
-## ✔ ggplot2   3.4.2     ✔ tibble    3.2.1
-## ✔ lubridate 1.9.2     ✔ tidyr     1.3.0
-## ✔ purrr     1.0.1     
-## ── Conflicts ────────────────────────────────────────── tidyverse_conflicts() ──
-## ✖ dplyr::filter() masks stats::filter()
-## ✖ dplyr::lag()    masks stats::lag()
-## ℹ Use the conflicted package (&lt;http://conflicted.r-lib.org/&gt;) to force all conflicts to become errors</code></pre>
-<pre class="r"><code>library(tableone)
-library(survey)</code></pre>
-<pre><code>## Loading required package: grid
-## Loading required package: Matrix</code></pre>
-<pre><code>## Warning: package &#39;Matrix&#39; was built under R version 4.3.1</code></pre>
-<pre><code>## 
-## Attaching package: &#39;Matrix&#39;
-## 
-## The following objects are masked from &#39;package:tidyr&#39;:
-## 
-##     expand, pack, unpack
-## 
-## Loading required package: survival
-## 
-## Attaching package: &#39;survey&#39;
-## 
-## The following object is masked from &#39;package:graphics&#39;:
-## 
-##     dotchart</code></pre>
-<pre class="r"><code>library(readxl)</code></pre>
-<pre class="r"><code>base_path &lt;- &quot;~/OneDrive-BethIsraelLaheyHealth&quot;
-project_folder &lt;- &quot;2022_Insomnia_metabolites_project&quot;
-# phenotype_file &lt;- file.path(base_path, project_folder, &quot;Phenotypes/metsleep_covariates_20200715.csv&quot;)
-phenotype_file &lt;- &quot;metsleep_covariates_20200715.csv&quot;
+<pre class="r"><code>library(tidyverse)
+library(readxl)</code></pre>
+<pre class="r"><code>batch1_metab_sheet_name &lt;- &quot;data&quot;
+batch2_metab_sheet_name &lt;- &quot;batch2_batchnormalized_v1&quot;
+batch1_sample_info_sheet_name &lt;- &quot;sample.info&quot;
+batch2_sample_info_sheet_name &lt;- &quot;sample.info_batch2_v1&quot;
+metabolites_info_sheet_name &lt;- &quot;metabolites.info&quot;</code></pre>
+<pre class="r"><code>metab_vals_batch1 &lt;- read_excel(&quot;2batch_combined_data_V1_only.xlsx&quot;, sheet = batch1_metab_sheet_name)
+metab_vals_batch2 &lt;- read_excel(&quot;batch2_data.xlsx&quot;, sheet = batch2_metab_sheet_name)
 
-result_folder &lt;- &quot;Results&quot;
+metab_vals_batch2 &lt;- metab_vals_batch2[, colnames(metab_vals_batch1)]
 
-# metab_data_file &lt;- file.path(base_path, &quot;metabolites info/SOL_with_Batch2/2batch_combined_data_V1_only.xlsx&quot;)</code></pre>
-<pre class="r"><code>dat &lt;- read.csv(phenotype_file)
-cols_to_keep &lt;- c(
-  &quot;ID&quot;, &quot;STRAT&quot;, &quot;PSU_ID&quot;, &quot;WEIGHT_FINAL_NORM_OVERALL&quot;,
-  &quot;CENTER&quot;, &quot;AGE&quot;, &quot;BMI&quot;, &quot;GENDER&quot;, &quot;ALCOHOL_USE&quot;,
-  &quot;CIGARETTE_USE&quot;, &quot;HYPERTENSION&quot;, &quot;BKGRD1_C7&quot;, &quot;DIABETES2_INDICATOR&quot;,
-  &quot;ESS&quot;, &quot;WHIIRS&quot;, &quot;slpa54gt5&quot;, &quot;SLPDUR&quot;, &quot;GPAQ_TOTAL_MET&quot;
-)
+sample_info_batch1 &lt;- read_excel(&quot;2batch_combined_data_V1_only.xlsx&quot;, sheet = batch1_sample_info_sheet_name)
+sample_info_batch2 &lt;- read_excel(&quot;batch2_data.xlsx&quot;, sheet = batch2_sample_info_sheet_name)
 
-dat &lt;- dat[, cols_to_keep]</code></pre>
-<pre class="r"><code>dat &lt;- dat %&gt;%
-  mutate(
-    Gender = factor(GENDER, levels = c(&quot;F&quot;, &quot;M&quot;), labels = c(&quot;Female&quot;, &quot;Male&quot;)),
-    Center = factor(CENTER, levels = c(&quot;B&quot;, &quot;C&quot;, &quot;M&quot;, &quot;S&quot;), labels = c(&quot;Bronx&quot;, &quot;Chicago&quot;, &quot;Miami&quot;, &quot;San Diego&quot;)),
-    Background = factor(BKGRD1_C7,
-      levels = c(&quot;0&quot;, &quot;1&quot;, &quot;2&quot;, &quot;3&quot;, &quot;4&quot;, &quot;5&quot;, &quot;6&quot;),
-      labels = c(
-        &quot;Domician&quot;, &quot;Central American&quot;, &quot;Cuban&quot;, &quot;Mexican&quot;,
-        &quot;Puerto Rican&quot;, &quot;South American&quot;, &quot;More than one/Other heritage&quot;
-      )
-    ),
-    Survey_weight = WEIGHT_FINAL_NORM_OVERALL,
-    Alcohol_use = factor(ALCOHOL_USE, levels = c(&quot;1&quot;, &quot;2&quot;, &quot;3&quot;), labels = c(&quot;Never&quot;, &quot;Former&quot;, &quot;current&quot;)),
-    Smoking = factor(CIGARETTE_USE, levels = c(&quot;1&quot;, &quot;2&quot;, &quot;3&quot;), labels = c(&quot;Never&quot;, &quot;Former&quot;, &quot;current&quot;)),
-    Diabetes = factor(DIABETES2_INDICATOR, c(&quot;0&quot;, &quot;1&quot;), labels = c(&quot;No&quot;, &quot;Yes&quot;)),
-    EDS = factor(ifelse(ESS &gt; 10, &quot;Yes&quot;, &quot;No&quot;)),
-    Insomnia = factor(ifelse(WHIIRS &gt; 9, &quot;Yes&quot;, &quot;No&quot;)),
-    Mild_OSA = factor(slpa54gt5, c(&quot;0&quot;, &quot;1&quot;), labels = c(&quot;No&quot;, &quot;Yes&quot;)),
-    Sleep_duration = SLPDUR,
-    Total_phys = GPAQ_TOTAL_MET
-  )</code></pre>
-<pre class="r"><code>#saveRDS(dat, &quot;Results/Processed_pheno.RDS&quot;)
-#saveRDS(dat, file.path(base_path, project_folder, result_folder, &quot;Processed_pheno.RDS&quot;))</code></pre>
+metab_vals_batch1 &lt;- merge(metab_vals_batch1, 
+                           sample_info_batch1[,c(&quot;PARENT_SAMPLE_NAME&quot;, &quot;SOL_ID&quot;)], 
+                           by = &quot;PARENT_SAMPLE_NAME&quot;)
+
+metab_vals_batch2 &lt;- merge(metab_vals_batch2, 
+                           sample_info_batch2[,c(&quot;PARENT_SAMPLE_NAME&quot;, &quot;SOL_ID&quot;)], 
+                           by = &quot;PARENT_SAMPLE_NAME&quot;)
+
+set.seed(1997)
+random_index_b1 &lt;- data.frame(index = 1:nrow(metab_vals_batch1 ), SOL_ID = metab_vals_batch1$SOL_ID)
+for (id in unique(random_index_b1$SOL_ID)){
+  row_inds &lt;- which(random_index_b1$SOL_ID == id)
+  if (length(row_inds) == 1) next
+  selected_ind &lt;- sample(row_inds, 1)
+  random_index_b1 &lt;- random_index_b1[-setdiff(row_inds, selected_ind),]
+}
+metab_vals_batch1 &lt;- metab_vals_batch1[random_index_b1$index,]
+
+
+
+random_index_b2 &lt;- data.frame(index = 1:nrow(metab_vals_batch2 ), SOL_ID = metab_vals_batch2$SOL_ID)
+for (id in unique(random_index_b2$SOL_ID)){
+  row_inds &lt;- which(random_index_b2$SOL_ID == id)
+  if (length(row_inds) == 1) next
+  selected_ind &lt;- sample(row_inds, 1)
+  random_index_b2 &lt;- random_index_b2[-setdiff(row_inds, selected_ind),]
+}
+metab_vals_batch2 &lt;- metab_vals_batch2[random_index_b2$index,]
+
+metab_vals_batch2 &lt;- metab_vals_batch2[-which(is.element(metab_vals_batch2$SOL_ID, metab_vals_batch1$SOL_ID)),]</code></pre>
+<pre class="r"><code>miss_prop &lt;- 0.25
+all(colnames(metab_vals_batch1) == colnames(metab_vals_batch2))</code></pre>
+<pre><code>## [1] TRUE</code></pre>
+<pre class="r"><code>missing_prop &lt;- data.frame(CHEM_ID = colnames(metab_vals_batch1)[-1], 
+                           missing_prop_batch1 = NA, 
+                           missing_prop_batch2 = NA)
+
+missing_prop$missing_prop_batch1 &lt;- apply(metab_vals_batch1, 2, function(x){mean(is.na(x))})[-1]
+missing_prop$missing_prop_batch2 &lt;- apply(metab_vals_batch2, 2, function(x){mean(is.na(x))})[-1]
+
+inds_acceptable &lt;- which(missing_prop$missing_prop_batch1 &lt; miss_prop  &amp; missing_prop$missing_prop_batch2 &lt; miss_prop )
+CHEM_ID_keep &lt;- missing_prop$CHEM_ID[inds_acceptable]
+CHEM_ID_keep &lt;- setdiff(CHEM_ID_keep, &quot;SOL_ID&quot;)
+
+metab_vals_batch1 &lt;- metab_vals_batch1[,c(&quot;SOL_ID&quot;, CHEM_ID_keep)]
+metab_vals_batch2 &lt;- metab_vals_batch2[,c(&quot;SOL_ID&quot;, CHEM_ID_keep)]
+
+metab_mins_batch1 &lt;- apply(metab_vals_batch1[,CHEM_ID_keep], 2, function(x){min(x, na.rm = TRUE)})
+metab_mins_batch2 &lt;- apply(metab_vals_batch2[,CHEM_ID_keep], 2, function(x){min(x, na.rm = TRUE)})
+
+for (i in 1:length(CHEM_ID_keep)){
+  cur_chem &lt;- CHEM_ID_keep[i]
+  batch1_mis_inds_cur_chem &lt;- which(is.na(metab_vals_batch1[,cur_chem]))
+  if (length(batch1_mis_inds_cur_chem) &gt; 0){
+    metab_vals_batch1[batch1_mis_inds_cur_chem,cur_chem] &lt;- metab_mins_batch1[cur_chem]/2
+  }
+ 
+  batch2_mis_inds_cur_chem &lt;- which(is.na(metab_vals_batch2[,cur_chem]))
+  if (length(batch2_mis_inds_cur_chem) &gt; 0){
+    metab_vals_batch2[batch2_mis_inds_cur_chem,cur_chem] &lt;- metab_mins_batch2[cur_chem]/2
+  } 
+  
+}
+
+#saveRDS(metab_vals_batch1, file = &quot;Processed_metab_b1_updated.RDS&quot;)
+
+#saveRDS(metab_vals_batch2, file = &quot;Processed_metab_b2_updated.RDS&quot;)</code></pre>
 
 
 
