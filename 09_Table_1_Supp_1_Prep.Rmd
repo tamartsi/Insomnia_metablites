@@ -1,0 +1,163 @@
+---
+title: "09_Table_1_Supp_1_Prep"
+author: "Yu Zhang"
+output:
+  md_document:
+    variant: markdown_github
+  html_document: default
+---
+
+```{r Load packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tableone)
+library(survey)
+library(readxl)
+```
+
+# Batch strata
+
+# Read data
+```{r}
+dat <- read.csv("metsleep_covariates_20200715.csv")
+
+cols_to_keep <- c(
+  "ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL",
+  "CENTER", "AGE", "BMI", "GENDER", "ALCOHOL_USE",
+  "CIGARETTE_USE", "HYPERTENSION", "BKGRD1_C7", "DIABETES2_INDICATOR",
+  "ESS", "WHIIRS", "slpa54gt5", "SLPDUR", "GPAQ_TOTAL_MET",
+  "OCEA13"
+)
+
+dat <- dat[, cols_to_keep]
+
+metab_file_b1 <- "Processed_metab_b1_updated.RDS"
+metab_file_b2 <- "Processed_metab_b2_updated.RDS"
+metab_b1 <- readRDS(metab_file_b1)
+metab_b2 <- readRDS(metab_file_b2)
+
+col_chems <- setdiff(1:ncol(metab_b1), grep("SOL_ID", colnames(metab_b1)))
+colnames(metab_b1)[col_chems] <- colnames(metab_b2)[col_chems] <- paste0("chem_", colnames(metab_b1)[col_chems])
+
+dat$SOL_ID <- as.character(dat$ID)
+dat <- dat[!duplicated(dat$SOL_ID), ]
+
+dat_b1 <- merge(dat, metab_b1, by = "SOL_ID", all.y = TRUE)
+dat_b1 <- dat_b1[!is.na(dat_b1$WHIIRS), ]
+dat_b2 <- merge(dat, metab_b2, by = "SOL_ID", all.y = TRUE)
+dat_b2 <- dat_b2[!is.na(dat_b2$WHIIRS), ]
+dat_b1$Batch <- "Batch 1"
+dat_b2$Batch <- "Batch 2"
+
+dat_comb <- rbind(dat_b1, dat_b2)
+```
+
+
+# Recoding variables
+
+```{r}
+dat_comb <- dat_comb %>%
+  mutate(
+    Gender = factor(GENDER, levels = c("F", "M"), labels = c("Female", "Male")),
+    Center = factor(CENTER, levels = c("B", "C", "M", "S"), labels = c("Bronx", "Chicago", "Miami", "San Diego")),
+    Background = factor(BKGRD1_C7, levels = c("0", "1", "2", "3", "4", "5", "6"), labels = c("Domician", "Central American", "Cuban", "Mexican", "Puerto Rican", "South American", "More than one/Other heritage")),
+    Survey_weight = WEIGHT_FINAL_NORM_OVERALL,
+    Alcohol_use = factor(ALCOHOL_USE, levels = c("1", "2", "3"), labels = c("Never", "Former", "current")),
+    Smoking = factor(CIGARETTE_USE, levels = c("1", "2", "3"), labels = c("Never", "Former", "current")),
+    Diabetes = factor(DIABETES2_INDICATOR, c("0", "1"), labels = c("No", "Yes")),
+    EDS = factor(ifelse(ESS > 10, "Yes", "No")),
+    Insomnia = factor(ifelse(WHIIRS >= 9, "Yes", "No")),
+    Mild_to_severe_OSA = factor(slpa54gt5, c("0", "1"), labels = c("No", "Yes")),
+    Sleep_duration = SLPDUR,
+    Total_phys = GPAQ_TOTAL_MET,
+    Shift_work = factor(ifelse(OCEA13 %in% c("2", "3", "4", "5", "6"), "Yes", "No"))
+  )
+```
+
+
+
+# Batch stratified (Table 1)
+
+```{r}
+survey_obj <- svydesign(id = ~PSU_ID, strata = ~STRAT, weights = ~Survey_weight, data = dat_comb)
+
+tbl1_vars <- c(
+  "Gender", "Batch", "Center", "BMI", "AGE",
+  "Background", "Alcohol_use",
+  "Smoking", "Diabetes", "EDS", "Insomnia",
+  "Mild_to_severe_OSA", "Sleep_duration", "Total_phys",
+  "Shift_work"
+)
+
+
+tbl1_noweight <- print(CreateTableOne(vars = tbl1_vars, data = dat_comb, strata = "Batch"), missing = TRUE, varLabels = TRUE, digits = 3, pDigits = 3, showAllLevels = TRUE)
+
+tbl1_weighted <- print(svyCreateTableOne(vars = tbl1_vars, data = survey_obj, strata = "Batch"), missing = TRUE, varLabels = TRUE, digits = 3, pDigits = 3, showAllLevels = TRUE)
+```
+
+Combine the count values (from the unweighted table) and percentage (from the weighted table) together
+
+```{r}
+tbl1_w <- tbl1_weighted[, -which(colnames(tbl1_noweight) %in% c("p", "test"))]
+tbl1 <- tbl1_noweight[, -which(colnames(tbl1_noweight) %in% c("p", "test"))]
+
+tbl1_comb <- tbl1
+col_inds_to_update <- which(colnames(tbl1_w) %in% c("Batch 1", "Batch 2"))
+
+# update tbl1_comb with the percentages from the weighted table
+for (i in col_inds_to_update) {
+  counts <- sapply(tbl1[, i], function(x) {
+    strsplit(x, split = "(", fixed = TRUE)[[1]][1]
+  })
+  percent <- sapply(tbl1_w[, i], function(x) {
+    paste0("(", strsplit(x, split = "(", fixed = TRUE)[[1]][2])
+  })
+  tbl1_comb[, i] <- paste0(counts, percent)
+}
+
+
+#write.csv(tbl1_comb, "Results/20240408_table1_Batch_strat_V3.csv")
+tbl1_comb
+```
+
+
+# Sex stratified (Supplementary Table 1)
+
+```{r}
+survey_obj <- svydesign(id = ~PSU_ID, strata = ~STRAT, weights = ~Survey_weight, data = dat_comb)
+
+tbl1_vars <- c(
+  "Gender", "Batch", "Center", "BMI", "AGE",
+  "Background", "Alcohol_use",
+  "Smoking", "Diabetes", "EDS", "Insomnia",
+  "Mild_to_severe_OSA", "Sleep_duration", "Total_phys",
+  "Shift_work"
+)
+
+
+tbl1_noweight <- print(CreateTableOne(vars = tbl1_vars, data = dat_comb, strata = "Gender"), missing = TRUE, varLabels = TRUE, digits = 3, pDigits = 3, showAllLevels = TRUE)
+
+tbl1_weighted <- print(svyCreateTableOne(vars = tbl1_vars, data = survey_obj, strata = "Gender"), missing = TRUE, varLabels = TRUE, digits = 3, pDigits = 3, showAllLevels = TRUE)
+```
+
+Combine the count values (from the unweighted table) and percentage (from the weighted table) together
+
+```{r}
+tbl1_w <- tbl1_weighted[, -which(colnames(tbl1_noweight) %in% c("p", "test"))]
+tbl1 <- tbl1_noweight[, -which(colnames(tbl1_noweight) %in% c("p", "test"))]
+
+tbl1_comb <- tbl1
+col_inds_to_update <- which(colnames(tbl1_w) %in% c("Female", "Male"))
+
+# update tbl1_comb with the percentages from the weighted table
+for (i in col_inds_to_update) {
+  counts <- sapply(tbl1[, i], function(x) {
+    strsplit(x, split = "(", fixed = TRUE)[[1]][1]
+  })
+  percent <- sapply(tbl1_w[, i], function(x) {
+    paste0("(", strsplit(x, split = "(", fixed = TRUE)[[1]][2])
+  })
+  tbl1_comb[, i] <- paste0(counts, percent)
+}
+
+tbl1_comb
+```
