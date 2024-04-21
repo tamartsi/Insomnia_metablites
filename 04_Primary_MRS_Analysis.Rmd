@@ -15,14 +15,14 @@ library(survey)
 ```
 
 # Functions
-## SOL Association Analysis FUnction
+## SOL Association Analysis Function
 ```{r}
 sol_association_analysis <- function(pheno, mrs_df, id_col, outcome, cov_names, family_type = "gaussian") {
   if (family_type == "binomial") {
     family_type <- "quasibinomial"
   }
-  mrsdat <- merge(pheno, mrs_df, by = id_col, all = TRUE)
-  mrsdat <- na.omit(mrsdat)
+  mrsdat <- merge(pheno, mrs_df, by = id_col, all.y = TRUE)
+  mrsdat$keep <- ifelse(!is.na(mrsdat[[outcome]]), 1, 0)
   survey <- svydesign(
     id = ~PSU_ID, strata = ~STRAT,
     weights = ~WEIGHT_FINAL_NORM_OVERALL,

@@ -7,15 +7,15 @@ library(survey)
 
 # Functions
 
-## SOL Association Analysis FUnction
+## SOL Association Analysis Function
 
 ``` r
 sol_association_analysis <- function(pheno, mrs_df, id_col, outcome, cov_names, family_type = "gaussian") {
   if (family_type == "binomial") {
     family_type <- "quasibinomial"
   }
-  mrsdat <- merge(pheno, mrs_df, by = id_col, all = TRUE)
-  mrsdat <- na.omit(mrsdat)
+  mrsdat <- merge(pheno, mrs_df, by = id_col, all.y = TRUE)
+  mrsdat$keep <- ifelse(!is.na(mrsdat[[outcome]]), 1, 0)
   survey <- svydesign(
     id = ~PSU_ID, strata = ~STRAT,
     weights = ~WEIGHT_FINAL_NORM_OVERALL,
@@ -242,8 +242,8 @@ print(tab_report)
 ```
 
     ##          Exposures Sample_Size Sample_Size_b2    Est               CI
-    ## Insomnia  Insomnia        3895           2121 1.2726 [1.0615, 1.5256]
-    ## WHIIRS      WHIIRS        3895           2121 0.9420   [0.466, 1.418]
+    ## Insomnia  Insomnia        3895           2121 1.2926 [1.1135, 1.5005]
+    ## WHIIRS      WHIIRS        3895           2121 0.7110 [0.3913, 1.0306]
     ##             P_Value Metabolites
-    ## Insomnia 9.5291e-03          76
-    ## WHIIRS   1.2311e-04          68
+    ## Insomnia 8.0421e-04          76
+    ## WHIIRS   1.5873e-05          68

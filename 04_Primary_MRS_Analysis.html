@@ -362,13 +362,13 @@ library(survey)</code></pre>
 <div id="functions" class="section level1">
 <h1>Functions</h1>
 <div id="sol-association-analysis-function" class="section level2">
-<h2>SOL Association Analysis FUnction</h2>
+<h2>SOL Association Analysis Function</h2>
 <pre class="r"><code>sol_association_analysis &lt;- function(pheno, mrs_df, id_col, outcome, cov_names, family_type = &quot;gaussian&quot;) {
   if (family_type == &quot;binomial&quot;) {
     family_type &lt;- &quot;quasibinomial&quot;
   }
-  mrsdat &lt;- merge(pheno, mrs_df, by = id_col, all = TRUE)
-  mrsdat &lt;- na.omit(mrsdat)
+  mrsdat &lt;- merge(pheno, mrs_df, by = id_col, all.y = TRUE)
+  mrsdat$keep &lt;- ifelse(!is.na(mrsdat[[outcome]]), 1, 0)
   survey &lt;- svydesign(
     id = ~PSU_ID, strata = ~STRAT,
     weights = ~WEIGHT_FINAL_NORM_OVERALL,
@@ -571,11 +571,11 @@ tab_report &lt;- tab_temp %&gt;%
   select(Exposures, Sample_Size, Sample_Size_b2, Est, CI, P_Value, Metabolites)
 print(tab_report)</code></pre>
 <pre><code>##          Exposures Sample_Size Sample_Size_b2    Est               CI
-## Insomnia  Insomnia        3895           2121 1.2726 [1.0615, 1.5256]
-## WHIIRS      WHIIRS        3895           2121 0.9420   [0.466, 1.418]
+## Insomnia  Insomnia        3895           2121 1.2926 [1.1135, 1.5005]
+## WHIIRS      WHIIRS        3895           2121 0.7110 [0.3913, 1.0306]
 ##             P_Value Metabolites
-## Insomnia 9.5291e-03          76
-## WHIIRS   1.2311e-04          68</code></pre>
+## Insomnia 8.0421e-04          76
+## WHIIRS   1.5873e-05          68</code></pre>
 </div>
 
 

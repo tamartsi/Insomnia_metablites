@@ -15,14 +15,14 @@ library(survey)
 ```
 
 # Functions
-## SOL Association Analysis FUnction
+## SOL Association Analysis Function
 ```{r}
 sol_association_analysis <- function(pheno, mrs_df, id_col, outcome, cov_names, family_type = "gaussian") {
   if (family_type == "binomial") {
     family_type <- "quasibinomial"
   }
-  mrsdat <- merge(pheno, mrs_df, by = id_col, all = TRUE)
-  mrsdat <- na.omit(mrsdat)
+  mrsdat <- merge(pheno, mrs_df, by = id_col, all.y = TRUE)
+  mrsdat$keep <- ifelse(!is.na(mrsdat[[outcome]]), 1, 0)
   survey <- svydesign(
     id = ~PSU_ID, strata = ~STRAT,
     weights = ~WEIGHT_FINAL_NORM_OVERALL,
@@ -173,7 +173,7 @@ for (model in names(covariates)) {
     mrs_coefs <- lasso_selected(dat_b1_cur, chem_columns, outcome, family_var, cov_names = covariates[[model]])
     coef_list[[paste(outcome, model, sep = "_")]] <- mrs_coefs
     b1_sample_size[[paste(outcome, model, sep = "_")]] <- nrow(dat_b1_cur)
-    cat("There are ", length(mrs_coefs), " metablites selected into the MRS for", paste(outcome, model, sep = "_"), "\n")
+    #cat("There are ", length(mrs_coefs), " metablites selected into the MRS for", paste(outcome, model, sep = "_"), "\n")
     metabolite_num[[paste(outcome, model, sep = "_")]] <- length(mrs_coefs)
   }
 }
@@ -256,5 +256,5 @@ tab_report <- tab_temp %>%
     P_Value = sprintf("%.4e", P_Value)
   ) %>%
   select(Exposures, Model, Sample_Size, Sample_Size_b2, Est, CI, P_Value, Metabolites)
-print(tab_report)
+#print(tab_report)
 ```
