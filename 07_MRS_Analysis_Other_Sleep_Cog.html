@@ -603,7 +603,7 @@ for (model in names(covariates)) {
           P_Value = pvalue_first_covariate, Metabolites = metabolite_num[[paste(outcome, model, sep = &quot;_&quot;)]]
         )
       }
-      result_list[[paste(exposure, outcome, model, sep = &quot;_&quot;)]] &lt;- mod_df
+      result_list[[paste(exposure, outcome, &quot;MRS&quot;, model, sep = &quot;_&quot;)]] &lt;- mod_df
     }
   }
 }</code></pre>
@@ -615,68 +615,98 @@ tab_report &lt;- tab_temp %&gt;%
   mutate(
     Est = round(Est, 4),
     CI = paste0(&quot;[&quot;, round(CI_Lower, 4), &quot;, &quot;, round(CI_Upper, 4), &quot;]&quot;),
-    P_Value = sprintf(&quot;%.4e&quot;, P_Value)
+    P_Value = sprintf(&quot;%.4e&quot;, P_Value),
+    MRS = paste0(MRS, &quot;_MRS&quot;)
   ) %&gt;%
   select(Exposures, MRS, Model, Sample_Size, Est, CI, P_Value)
 print(tab_report)</code></pre>
-<pre><code>##                                       Exposures      MRS    Model Sample_Size
-## Sleep_Duration_Insomnia_M1       Sleep_Duration Insomnia       M1        5893
-## Sleep_Duration_WHIIRS_M1         Sleep_Duration   WHIIRS       M1        5893
-## OSA_Insomnia_M1                             OSA Insomnia       M1        5513
-## OSA_WHIIRS_M1                               OSA   WHIIRS       M1        5513
-## Sleep_Med_Use_Insomnia_M1         Sleep_Med_Use Insomnia       M1        6107
-## Sleep_Med_Use_WHIIRS_M1           Sleep_Med_Use   WHIIRS       M1        6107
-## shift_work_Insomnia_M1               shift_work Insomnia       M1        6180
-## shift_work_WHIIRS_M1                 shift_work   WHIIRS       M1        6180
-## COG_Insomnia_M1                             COG Insomnia       M1        4070
-## COG_WHIIRS_M1                               COG   WHIIRS       M1        4070
-## COG_Change_Insomnia_M1               COG_Change Insomnia       M1        2936
-## COG_Change_WHIIRS_M1                 COG_Change   WHIIRS       M1        2936
-## MCI_Insomnia_M1                             MCI Insomnia       M1        3169
-## MCI_WHIIRS_M1                               MCI   WHIIRS       M1        3169
-## Sleep_Duration_Insomnia_M1_nomed Sleep_Duration Insomnia M1_nomed        5893
-## Sleep_Duration_WHIIRS_M1_nomed   Sleep_Duration   WHIIRS M1_nomed        5893
-## OSA_Insomnia_M1_nomed                       OSA Insomnia M1_nomed        5513
-## OSA_WHIIRS_M1_nomed                         OSA   WHIIRS M1_nomed        5513
-## Sleep_Med_Use_Insomnia_M1_nomed   Sleep_Med_Use Insomnia M1_nomed        6107
-## Sleep_Med_Use_WHIIRS_M1_nomed     Sleep_Med_Use   WHIIRS M1_nomed        6107
-## shift_work_Insomnia_M1_nomed         shift_work Insomnia M1_nomed        6180
-## shift_work_WHIIRS_M1_nomed           shift_work   WHIIRS M1_nomed        6180
-## COG_Insomnia_M1_nomed                       COG Insomnia M1_nomed        4070
-## COG_WHIIRS_M1_nomed                         COG   WHIIRS M1_nomed        4070
-## COG_Change_Insomnia_M1_nomed         COG_Change Insomnia M1_nomed        2936
-## COG_Change_WHIIRS_M1_nomed           COG_Change   WHIIRS M1_nomed        2936
-## MCI_Insomnia_M1_nomed                       MCI Insomnia M1_nomed        3169
-## MCI_WHIIRS_M1_nomed                         MCI   WHIIRS M1_nomed        3169
-##                                      Est                 CI    P_Value
-## Sleep_Duration_Insomnia_M1        0.0536   [0.0014, 0.1059] 4.4613e-02
-## Sleep_Duration_WHIIRS_M1          0.0865   [0.0305, 0.1425] 2.5516e-03
-## OSA_Insomnia_M1                   1.1508   [1.0579, 1.2519] 1.1353e-03
-## OSA_WHIIRS_M1                     1.1374   [1.0408, 1.2429] 4.6308e-03
-## Sleep_Med_Use_Insomnia_M1         0.1586   [0.1104, 0.2067] 2.2105e-10
-## Sleep_Med_Use_WHIIRS_M1           0.1840   [0.1396, 0.2283] 2.4097e-15
-## shift_work_Insomnia_M1            0.8230   [0.7474, 0.9061] 8.1717e-05
-## shift_work_WHIIRS_M1              0.8230   [0.7486, 0.9048] 6.3170e-05
-## COG_Insomnia_M1                  -0.0867 [-0.1177, -0.0558] 5.7582e-08
-## COG_WHIIRS_M1                    -0.1149 [-0.1453, -0.0845] 4.2071e-13
-## COG_Change_Insomnia_M1           -0.0078  [-0.0335, 0.0179] 5.5303e-01
-## COG_Change_WHIIRS_M1             -0.0037  [-0.0292, 0.0219] 7.7894e-01
-## MCI_Insomnia_M1                   1.3370   [1.1478, 1.5574] 2.1043e-04
-## MCI_WHIIRS_M1                     1.4539   [1.2361, 1.7101] 7.5795e-06
-## Sleep_Duration_Insomnia_M1_nomed  0.0554   [0.0015, 0.1093] 4.4316e-02
-## Sleep_Duration_WHIIRS_M1_nomed    0.0830   [0.0284, 0.1376] 3.0003e-03
-## OSA_Insomnia_M1_nomed             1.1176   [1.0267, 1.2165] 1.0428e-02
-## OSA_WHIIRS_M1_nomed               1.1128     [1.02, 1.2141] 1.6403e-02
-## Sleep_Med_Use_Insomnia_M1_nomed   0.0787   [0.0302, 0.1272] 1.5412e-03
-## Sleep_Med_Use_WHIIRS_M1_nomed     0.1189   [0.0745, 0.1634] 2.1446e-07
-## shift_work_Insomnia_M1_nomed      0.8772   [0.8043, 0.9568] 3.2225e-03
-## shift_work_WHIIRS_M1_nomed        0.8497   [0.7707, 0.9369] 1.1397e-03
-## COG_Insomnia_M1_nomed            -0.0837 [-0.1127, -0.0548] 2.2020e-08
-## COG_WHIIRS_M1_nomed              -0.1066 [-0.1359, -0.0773] 2.8605e-12
-## COG_Change_Insomnia_M1_nomed     -0.0091   [-0.0332, 0.015] 4.6071e-01
-## COG_Change_WHIIRS_M1_nomed       -0.0165  [-0.0416, 0.0087] 1.9965e-01
-## MCI_Insomnia_M1_nomed             1.3284    [1.1422, 1.545] 2.5010e-04
-## MCI_WHIIRS_M1_nomed               1.4486   [1.2316, 1.7039] 9.2741e-06</code></pre>
+<pre><code>##                                           Exposures          MRS    Model
+## Sleep_Duration_Insomnia_MRS_M1       Sleep_Duration Insomnia_MRS       M1
+## Sleep_Duration_WHIIRS_MRS_M1         Sleep_Duration   WHIIRS_MRS       M1
+## OSA_Insomnia_MRS_M1                             OSA Insomnia_MRS       M1
+## OSA_WHIIRS_MRS_M1                               OSA   WHIIRS_MRS       M1
+## Sleep_Med_Use_Insomnia_MRS_M1         Sleep_Med_Use Insomnia_MRS       M1
+## Sleep_Med_Use_WHIIRS_MRS_M1           Sleep_Med_Use   WHIIRS_MRS       M1
+## shift_work_Insomnia_MRS_M1               shift_work Insomnia_MRS       M1
+## shift_work_WHIIRS_MRS_M1                 shift_work   WHIIRS_MRS       M1
+## COG_Insomnia_MRS_M1                             COG Insomnia_MRS       M1
+## COG_WHIIRS_MRS_M1                               COG   WHIIRS_MRS       M1
+## COG_Change_Insomnia_MRS_M1               COG_Change Insomnia_MRS       M1
+## COG_Change_WHIIRS_MRS_M1                 COG_Change   WHIIRS_MRS       M1
+## MCI_Insomnia_MRS_M1                             MCI Insomnia_MRS       M1
+## MCI_WHIIRS_MRS_M1                               MCI   WHIIRS_MRS       M1
+## Sleep_Duration_Insomnia_MRS_M1_nomed Sleep_Duration Insomnia_MRS M1_nomed
+## Sleep_Duration_WHIIRS_MRS_M1_nomed   Sleep_Duration   WHIIRS_MRS M1_nomed
+## OSA_Insomnia_MRS_M1_nomed                       OSA Insomnia_MRS M1_nomed
+## OSA_WHIIRS_MRS_M1_nomed                         OSA   WHIIRS_MRS M1_nomed
+## Sleep_Med_Use_Insomnia_MRS_M1_nomed   Sleep_Med_Use Insomnia_MRS M1_nomed
+## Sleep_Med_Use_WHIIRS_MRS_M1_nomed     Sleep_Med_Use   WHIIRS_MRS M1_nomed
+## shift_work_Insomnia_MRS_M1_nomed         shift_work Insomnia_MRS M1_nomed
+## shift_work_WHIIRS_MRS_M1_nomed           shift_work   WHIIRS_MRS M1_nomed
+## COG_Insomnia_MRS_M1_nomed                       COG Insomnia_MRS M1_nomed
+## COG_WHIIRS_MRS_M1_nomed                         COG   WHIIRS_MRS M1_nomed
+## COG_Change_Insomnia_MRS_M1_nomed         COG_Change Insomnia_MRS M1_nomed
+## COG_Change_WHIIRS_MRS_M1_nomed           COG_Change   WHIIRS_MRS M1_nomed
+## MCI_Insomnia_MRS_M1_nomed                       MCI Insomnia_MRS M1_nomed
+## MCI_WHIIRS_MRS_M1_nomed                         MCI   WHIIRS_MRS M1_nomed
+##                                      Sample_Size     Est                 CI
+## Sleep_Duration_Insomnia_MRS_M1              5893  0.0536   [0.0014, 0.1059]
+## Sleep_Duration_WHIIRS_MRS_M1                5893  0.0865   [0.0305, 0.1425]
+## OSA_Insomnia_MRS_M1                         5513  1.1508   [1.0579, 1.2519]
+## OSA_WHIIRS_MRS_M1                           5513  1.1374   [1.0408, 1.2429]
+## Sleep_Med_Use_Insomnia_MRS_M1               6107  0.1586   [0.1104, 0.2067]
+## Sleep_Med_Use_WHIIRS_MRS_M1                 6107  0.1840   [0.1396, 0.2283]
+## shift_work_Insomnia_MRS_M1                  6180  0.8230   [0.7474, 0.9061]
+## shift_work_WHIIRS_MRS_M1                    6180  0.8230   [0.7486, 0.9048]
+## COG_Insomnia_MRS_M1                         4070 -0.0867 [-0.1177, -0.0558]
+## COG_WHIIRS_MRS_M1                           4070 -0.1149 [-0.1453, -0.0845]
+## COG_Change_Insomnia_MRS_M1                  2936 -0.0078  [-0.0335, 0.0179]
+## COG_Change_WHIIRS_MRS_M1                    2936 -0.0037  [-0.0292, 0.0219]
+## MCI_Insomnia_MRS_M1                         3169  1.3370   [1.1478, 1.5574]
+## MCI_WHIIRS_MRS_M1                           3169  1.4539   [1.2361, 1.7101]
+## Sleep_Duration_Insomnia_MRS_M1_nomed        5893  0.0554   [0.0015, 0.1093]
+## Sleep_Duration_WHIIRS_MRS_M1_nomed          5893  0.0830   [0.0284, 0.1376]
+## OSA_Insomnia_MRS_M1_nomed                   5513  1.1176   [1.0267, 1.2165]
+## OSA_WHIIRS_MRS_M1_nomed                     5513  1.1128     [1.02, 1.2141]
+## Sleep_Med_Use_Insomnia_MRS_M1_nomed         6107  0.0787   [0.0302, 0.1272]
+## Sleep_Med_Use_WHIIRS_MRS_M1_nomed           6107  0.1189   [0.0745, 0.1634]
+## shift_work_Insomnia_MRS_M1_nomed            6180  0.8772   [0.8043, 0.9568]
+## shift_work_WHIIRS_MRS_M1_nomed              6180  0.8497   [0.7707, 0.9369]
+## COG_Insomnia_MRS_M1_nomed                   4070 -0.0837 [-0.1127, -0.0548]
+## COG_WHIIRS_MRS_M1_nomed                     4070 -0.1066 [-0.1359, -0.0773]
+## COG_Change_Insomnia_MRS_M1_nomed            2936 -0.0091   [-0.0332, 0.015]
+## COG_Change_WHIIRS_MRS_M1_nomed              2936 -0.0165  [-0.0416, 0.0087]
+## MCI_Insomnia_MRS_M1_nomed                   3169  1.3284    [1.1422, 1.545]
+## MCI_WHIIRS_MRS_M1_nomed                     3169  1.4486   [1.2316, 1.7039]
+##                                         P_Value
+## Sleep_Duration_Insomnia_MRS_M1       4.4613e-02
+## Sleep_Duration_WHIIRS_MRS_M1         2.5516e-03
+## OSA_Insomnia_MRS_M1                  1.1353e-03
+## OSA_WHIIRS_MRS_M1                    4.6308e-03
+## Sleep_Med_Use_Insomnia_MRS_M1        2.2105e-10
+## Sleep_Med_Use_WHIIRS_MRS_M1          2.4097e-15
+## shift_work_Insomnia_MRS_M1           8.1717e-05
+## shift_work_WHIIRS_MRS_M1             6.3170e-05
+## COG_Insomnia_MRS_M1                  5.7582e-08
+## COG_WHIIRS_MRS_M1                    4.2071e-13
+## COG_Change_Insomnia_MRS_M1           5.5303e-01
+## COG_Change_WHIIRS_MRS_M1             7.7894e-01
+## MCI_Insomnia_MRS_M1                  2.1043e-04
+## MCI_WHIIRS_MRS_M1                    7.5795e-06
+## Sleep_Duration_Insomnia_MRS_M1_nomed 4.4316e-02
+## Sleep_Duration_WHIIRS_MRS_M1_nomed   3.0003e-03
+## OSA_Insomnia_MRS_M1_nomed            1.0428e-02
+## OSA_WHIIRS_MRS_M1_nomed              1.6403e-02
+## Sleep_Med_Use_Insomnia_MRS_M1_nomed  1.5412e-03
+## Sleep_Med_Use_WHIIRS_MRS_M1_nomed    2.1446e-07
+## shift_work_Insomnia_MRS_M1_nomed     3.2225e-03
+## shift_work_WHIIRS_MRS_M1_nomed       1.1397e-03
+## COG_Insomnia_MRS_M1_nomed            2.2020e-08
+## COG_WHIIRS_MRS_M1_nomed              2.8605e-12
+## COG_Change_Insomnia_MRS_M1_nomed     4.6071e-01
+## COG_Change_WHIIRS_MRS_M1_nomed       1.9965e-01
+## MCI_Insomnia_MRS_M1_nomed            2.5010e-04
+## MCI_WHIIRS_MRS_M1_nomed              9.2741e-06</code></pre>
 </div>
 
 

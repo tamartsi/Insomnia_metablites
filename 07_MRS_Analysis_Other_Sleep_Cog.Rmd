@@ -261,7 +261,7 @@ for (model in names(covariates)) {
           P_Value = pvalue_first_covariate, Metabolites = metabolite_num[[paste(outcome, model, sep = "_")]]
         )
       }
-      result_list[[paste(exposure, outcome, model, sep = "_")]] <- mod_df
+      result_list[[paste(exposure, outcome, "MRS", model, sep = "_")]] <- mod_df
     }
   }
 }
@@ -274,7 +274,8 @@ tab_report <- tab_temp %>%
   mutate(
     Est = round(Est, 4),
     CI = paste0("[", round(CI_Lower, 4), ", ", round(CI_Upper, 4), "]"),
-    P_Value = sprintf("%.4e", P_Value)
+    P_Value = sprintf("%.4e", P_Value),
+    MRS = paste0(MRS, "_MRS")
   ) %>%
   select(Exposures, MRS, Model, Sample_Size, Est, CI, P_Value)
 print(tab_report)
