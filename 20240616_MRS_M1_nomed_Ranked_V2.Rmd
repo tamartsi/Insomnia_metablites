@@ -1,0 +1,1402 @@
+---
+title: "20240312_MRS_M1_nomed_Ranked"
+author: "Yu Zhang"
+date: "2024-03-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(glmnet)
+library(survey)
+library(UpSetR)
+```
+
+# SOL Association Analysis
+```{r}
+sol_association_analysis <- function(pheno, mrs_df, id_col, outcome, cov_names, family_type = "gaussian") {
+  mrsdat <- merge(pheno, mrs_df, by = id_col, all = TRUE)
+  mrsdat <- na.omit(mrsdat)
+  survey <- svydesign(
+    id = ~PSU_ID, strata = ~STRAT,
+    weights = ~WEIGHT_FINAL_NORM_OVERALL,
+    data = mrsdat
+  )
+  mod <- svyglm(as.formula(paste(outcome, "~", paste0(outcome, "_MRS"), "+", paste(cov_names, collapse = " + "))),
+    design = survey,
+    na.action = na.omit,
+    family = family_type
+  )
+  return(mod)
+}
+```
+
+```{r}
+result_list <- list()
+coef_list <- list()
+chem_list <- list()
+```
+
+
+# Insomnia
+
+## Read data
+```{r}
+
+csv_files <- list()
+
+csv_files[["b1"]] <- readRDS("Processed_metab_b1_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b1"]]), grep("SOL_ID", colnames(csv_files[["b1"]])))
+colnames(csv_files[["b1"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b1"]])[col_chems])
+
+csv_files[["b2"]] <- readRDS("Processed_metab_b2_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b2"]]), grep("SOL_ID", colnames(csv_files[["b2"]])))
+colnames(csv_files[["b2"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b2"]])[col_chems])
+
+rankNorm <- function(x){
+  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
+}
+
+chem_columns <- grep("chem", colnames(csv_files[["b1"]]), value = TRUE)
+
+set.seed(89)
+for (i in 1:length(chem_columns)){
+  chem_i <- chem_columns[i]
+  csv_files[["b1"]][,chem_i] <- rankNorm(csv_files[["b1"]][,chem_i])
+
+  csv_files[["b2"]][,chem_i] <- rankNorm(csv_files[["b2"]][,chem_i])
+}
+
+pheno <- read.csv("metsleep_covariates_20200715.csv")
+
+
+##############################
+####### Outcome Define #######
+
+pheno$Insomnia <- ifelse(pheno$WHIIRS >=9, 1, 0)
+outcomes <- c("Insomnia")
+
+##############################
+##############################
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+covariates <- c("AGE_nomed", "GENDER", "CENTER", "Background")
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+pheno <- pheno[,c(design_vars, outcomes, covariates)]
+pheno <- pheno[!duplicated(pheno$ID),]
+
+pheno$SOL_ID  <- as.character(pheno$ID)
+```
+
+## Batch 1
+
+### Process Data
+```{r}
+dat_list <- list()
+
+dat_list[["dat_b1"]] <- merge(pheno, csv_files[["b1"]], by = "SOL_ID", all.y = TRUE)
+
+chem_columns <- grep("chem", colnames(dat_list[[1]]), value = TRUE)
+
+process_data <- function(data, chem_columns) {
+  data <- data[, c("SOL_ID", outcomes, covariates, chem_columns)]
+  data <- data[complete.cases(data),]
+  data$CENTER <- as.factor(data$CENTER)
+  data$Background <- as.factor(data$Background)
+  return(data)
+}
+dat_list[["dat_b1"]] <- process_data(dat_list[["dat_b1"]], chem_columns)
+```
+
+### LASSO
+```{r}
+lasso_selected <- function(data, chem_columns, outcome = outcomes) {
+  x <- model.matrix(as.formula(paste(outcome, "~", paste(setdiff(colnames(data), c("SOL_ID", outcome)), collapse = "+"))), data = data)
+  y <- data[,outcome]
+  
+  # apply penalty only on metabolites and not on other variables
+  n_chem <- length(chem_columns)
+  p.fac = c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+  
+  # CV
+  set.seed(1997)
+  kcvlasso <- cv.glmnet(x, y, nfolds = 5,
+                        family = "binomial",
+                        type.measure = "class",
+                        penalty.factor = p.fac)
+  
+  ind_min <- which.min(kcvlasso$cvm)
+  selected_lambda <- kcvlasso$lambda[ind_min]
+  
+  # lasso without cross validation
+  set.seed(1997)
+  lasso <- glmnet(x, y,
+                  lambda = selected_lambda,
+                  family = "binomial",
+                  type.measure = "class",
+                  penalty.factor = p.fac)
+  
+  lasso_beta <- lasso$beta
+  mrs_coefs <- lasso_beta[grep("chem", rownames(lasso_beta)), "s0"]
+  mrs_coefs <- mrs_coefs[which(mrs_coefs != 0)]
+  
+  return(mrs_coefs)
+}
+
+mrs_coefs <- lasso_selected(dat_list[[1]], chem_columns)
+
+cat("There are ", length(mrs_coefs), " metablites selected into the MRS \n")
+
+coef_list[[outcomes]] <- mrs_coefs
+chem_list[[outcomes]] <- names(mrs_coefs)
+```
+
+### Construct MRS
+```{r}
+compute_mrs <- function(dataset, coef_set){
+  row.names(dataset) <- dataset$SOL_ID
+  tmp <- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) <- outcomes
+  tmp <- data.frame(tmp)
+  tmp$SOL_ID <- rownames(tmp)
+  mrs_b2 <- tmp
+  row.names(mrs_b2) <- NULL
+  return(mrs_b2)
+}
+
+mrs_b2 <- compute_mrs(csv_files[["b2"]], mrs_coefs)
+
+
+# standardize MRS
+
+mrs_b2[, 1] <- as.vector(scale(mrs_b2[, 1]))
+colnames(mrs_b2)[1] <- paste0(outcomes, "_MRS")
+```
+
+### Association Test
+```{r}
+mod <- sol_association_analysis(pheno = pheno, mrs_df = mrs_b2, id_col = "SOL_ID", outcome = outcomes,
+                            cov_names = covariates, family_type = "quasibinomial")
+```
+
+### store value
+```{r}
+summary_mod <- summary(mod)
+
+# Extract Estimate and Standard Error for the first covariate
+# The first covariate is at position 2 (as position 1 is the intercept)
+estimate_first_covariate <- summary_mod$coefficients[2, "Estimate"]
+stderr_first_covariate <- summary_mod$coefficients[2, "Std. Error"]
+pvalue_first_covariate <- summary_mod$coefficients[2, "Pr(>|t|)"]
+
+# Calculate 95% Confidence Interval
+# Critical value for 95% CI under normal distribution is approximately 1.96
+ci_low <- estimate_first_covariate - (1.96 * stderr_first_covariate)
+ci_high <- estimate_first_covariate + (1.96 * stderr_first_covariate)
+
+# Print the results
+cat("Estimate for the first covariate:", estimate_first_covariate, "\n")
+cat("95% CI for the first covariate: [", ci_low, ",", ci_high, "]\n")
+
+dat_b2 <- merge(csv_files[["b2"]], pheno, by = "SOL_ID")
+dat_b2 <- dat_b2[!is.na(dat_b2[[outcomes]]) & !is.na(dat_b2$AGE_nomed),]
+size_b2 <- nrow(dat_b2)
+
+
+mod_df <- data.frame(Exposures = outcomes, Sample_Size = nrow(dat_list[["dat_b1"]]), Sample_Size_b2 = size_b2, Est = exp(estimate_first_covariate),
+                     CI_Lower = exp(ci_low), CI_Upper = exp(ci_high),
+                     P_Value = pvalue_first_covariate, Metabolites = length(mrs_coefs))
+result_list[[outcomes]] <- mod_df
+```
+
+# WHIIRS
+
+## Read data
+```{r}
+
+csv_files <- list()
+
+csv_files[["b1"]] <- readRDS("Processed_metab_b1_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b1"]]), grep("SOL_ID", colnames(csv_files[["b1"]])))
+colnames(csv_files[["b1"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b1"]])[col_chems])
+
+csv_files[["b2"]] <- readRDS("Processed_metab_b2_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b2"]]), grep("SOL_ID", colnames(csv_files[["b2"]])))
+colnames(csv_files[["b2"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b2"]])[col_chems])
+
+rankNorm <- function(x){
+  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
+}
+
+chem_columns <- grep("chem", colnames(csv_files[["b1"]]), value = TRUE)
+
+set.seed(89)
+for (i in 1:length(chem_columns)){
+  chem_i <- chem_columns[i]
+  csv_files[["b1"]][,chem_i] <- rankNorm(csv_files[["b1"]][,chem_i])
+
+  csv_files[["b2"]][,chem_i] <- rankNorm(csv_files[["b2"]][,chem_i])
+}
+
+
+pheno <- read.csv("metsleep_covariates_20200715.csv")
+
+
+##############################
+####### Outcome Define #######
+
+
+outcomes <- c("WHIIRS")
+
+##############################
+##############################
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+covariates <- c("AGE_nomed", "GENDER", "CENTER", "Background")
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+pheno <- pheno[,c(design_vars, outcomes, covariates)]
+pheno <- pheno[!duplicated(pheno$ID),]
+
+pheno$SOL_ID  <- as.character(pheno$ID)
+```
+
+## Batch 1
+
+### Process Data
+```{r}
+dat_list <- list()
+
+dat_list[["dat_b1"]] <- merge(pheno, csv_files[["b1"]], by = "SOL_ID", all.y = TRUE)
+
+chem_columns <- grep("chem", colnames(dat_list[[1]]), value = TRUE)
+
+process_data <- function(data, chem_columns) {
+  data <- data[, c("SOL_ID", outcomes, covariates, chem_columns)]
+  data <- data[complete.cases(data),]
+  data$CENTER <- as.factor(data$CENTER)
+  data$Background <- as.factor(data$Background)
+  return(data)
+}
+dat_list[["dat_b1"]] <- process_data(dat_list[["dat_b1"]], chem_columns)
+```
+
+### LASSO
+```{r}
+lasso_selected <- function(data, chem_columns, outcome = outcomes) {
+  x <- model.matrix(as.formula(paste(outcome, "~", paste(setdiff(colnames(data), c("SOL_ID", outcome)), collapse = "+"))), data = data)
+  y <- data[,outcome]
+  
+  # apply penalty only on metabolites and not on other variables
+  n_chem <- length(chem_columns)
+  p.fac = c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+  
+  # CV
+  set.seed(1997)
+  kcvlasso <- cv.glmnet(x, y, nfolds = 5,
+                        family = "gaussian",
+                        type.measure = "mse",
+                        penalty.factor = p.fac)
+  
+  ind_min <- which.min(kcvlasso$cvm)
+  selected_lambda <- kcvlasso$lambda[ind_min]
+  
+  # lasso without cross validation
+  set.seed(1997)
+  lasso <- glmnet(x, y,
+                  lambda = selected_lambda,
+                  family = "gaussian",
+                  type.measure = "mse",
+                  penalty.factor = p.fac)
+  
+  lasso_beta <- lasso$beta
+  mrs_coefs <- lasso_beta[grep("chem", rownames(lasso_beta)), "s0"]
+  mrs_coefs <- mrs_coefs[which(mrs_coefs != 0)]
+  
+  return(mrs_coefs)
+}
+
+mrs_coefs <- lasso_selected(dat_list[[1]], chem_columns)
+
+cat("There are ", length(mrs_coefs), " metablites selected into the MRS \n")
+
+coef_list[[outcomes]] <- mrs_coefs
+chem_list[[outcomes]] <- names(mrs_coefs)
+```
+
+### Construct MRS
+```{r}
+compute_mrs <- function(dataset, coef_set){
+  row.names(dataset) <- dataset$SOL_ID
+  tmp <- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) <- outcomes
+  tmp <- data.frame(tmp)
+  tmp$SOL_ID <- rownames(tmp)
+  mrs_b2 <- tmp
+  row.names(mrs_b2) <- NULL
+  return(mrs_b2)
+}
+
+mrs_b2 <- compute_mrs(csv_files[["b2"]], mrs_coefs)
+
+
+# standardize MRS
+
+mrs_b2[, 1] <- as.vector(scale(mrs_b2[, 1]))
+colnames(mrs_b2)[1] <- paste0(outcomes, "_MRS")
+```
+
+### Association Test
+```{r}
+mod <- sol_association_analysis(pheno = pheno, mrs_df = mrs_b2, id_col = "SOL_ID", outcome = outcomes,
+                            cov_names = covariates, family_type = "gaussian")
+```
+
+### store value
+```{r}
+summary_mod <- summary(mod)
+
+# Extract Estimate and Standard Error for the first covariate
+# The first covariate is at position 2 (as position 1 is the intercept)
+estimate_first_covariate <- summary_mod$coefficients[2, "Estimate"]
+stderr_first_covariate <- summary_mod$coefficients[2, "Std. Error"]
+pvalue_first_covariate <- summary_mod$coefficients[2, "Pr(>|t|)"]
+
+# Calculate 95% Confidence Interval
+# Critical value for 95% CI under normal distribution is approximately 1.96
+ci_low <- estimate_first_covariate - (1.96 * stderr_first_covariate)
+ci_high <- estimate_first_covariate + (1.96 * stderr_first_covariate)
+
+# Print the results
+cat("Estimate for the first covariate:", estimate_first_covariate, "\n")
+cat("95% CI for the first covariate: [", ci_low, ",", ci_high, "]\n")
+
+dat_b2 <- merge(csv_files[["b2"]], pheno, by = "SOL_ID")
+dat_b2 <- dat_b2[!is.na(dat_b2[[outcomes]]) & !is.na(dat_b2$AGE_nomed),]
+size_b2 <- nrow(dat_b2)
+
+
+mod_df <- data.frame(Exposures = outcomes, Sample_Size = nrow(dat_list[["dat_b1"]]), Sample_Size_b2 = size_b2, Est = estimate_first_covariate,
+                     CI_Lower = ci_low, CI_Upper = ci_high,
+                     P_Value = pvalue_first_covariate, Metabolites = length(mrs_coefs))
+result_list[[outcomes]] <- mod_df
+```
+
+# SLEA4
+
+## Read data
+```{r}
+
+csv_files <- list()
+
+csv_files[["b1"]] <- readRDS("Processed_metab_b1_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b1"]]), grep("SOL_ID", colnames(csv_files[["b1"]])))
+colnames(csv_files[["b1"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b1"]])[col_chems])
+
+csv_files[["b2"]] <- readRDS("Processed_metab_b2_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b2"]]), grep("SOL_ID", colnames(csv_files[["b2"]])))
+colnames(csv_files[["b2"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b2"]])[col_chems])
+
+rankNorm <- function(x){
+  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
+}
+
+chem_columns <- grep("chem", colnames(csv_files[["b1"]]), value = TRUE)
+
+set.seed(89)
+for (i in 1:length(chem_columns)){
+  chem_i <- chem_columns[i]
+  csv_files[["b1"]][,chem_i] <- rankNorm(csv_files[["b1"]][,chem_i])
+
+  csv_files[["b2"]][,chem_i] <- rankNorm(csv_files[["b2"]][,chem_i])
+}
+
+
+pheno <- read.csv("metsleep_covariates_20200715.csv")
+pheno <- lapply(pheno, function(x) ifelse(x == "", NA, x))
+pheno <- as.data.frame(pheno)
+pheno$SLEA4 <- as.numeric(as.character(pheno$SLEA4))
+pheno$SLEA5 <- as.numeric(as.character(pheno$SLEA5))
+pheno$SLEA6 <- as.numeric(as.character(pheno$SLEA6))
+pheno$SLEA7 <- as.numeric(as.character(pheno$SLEA7))
+
+
+##############################
+####### Outcome Define #######
+
+
+outcomes <- c("SLEA4")
+
+##############################
+##############################
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+covariates <- c("AGE_nomed", "GENDER", "CENTER", "Background")
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+pheno <- pheno[,c(design_vars, outcomes, covariates)]
+pheno <- pheno[!duplicated(pheno$ID),]
+
+pheno$SOL_ID  <- as.character(pheno$ID)
+```
+
+## Batch 1
+
+### Process Data
+```{r}
+dat_list <- list()
+
+dat_list[["dat_b1"]] <- merge(pheno, csv_files[["b1"]], by = "SOL_ID", all.y = TRUE)
+
+chem_columns <- grep("chem", colnames(dat_list[[1]]), value = TRUE)
+
+process_data <- function(data, chem_columns) {
+  data <- data[, c("SOL_ID", outcomes, covariates, chem_columns)]
+  data <- data[complete.cases(data),]
+  data$CENTER <- as.factor(data$CENTER)
+  data$Background <- as.factor(data$Background)
+  return(data)
+}
+dat_list[["dat_b1"]] <- process_data(dat_list[["dat_b1"]], chem_columns)
+```
+
+### LASSO
+```{r}
+lasso_selected <- function(data, chem_columns, outcome = outcomes) {
+  x <- model.matrix(as.formula(paste(outcome, "~", paste(setdiff(colnames(data), c("SOL_ID", outcome)), collapse = "+"))), data = data)
+  y <- data[,outcome]
+  
+  # apply penalty only on metabolites and not on other variables
+  n_chem <- length(chem_columns)
+  p.fac = c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+  
+  # CV
+  set.seed(1997)
+  kcvlasso <- cv.glmnet(x, y, nfolds = 5,
+                        family = "gaussian",
+                        type.measure = "mse",
+                        penalty.factor = p.fac)
+  
+  ind_min <- which.min(kcvlasso$cvm)
+  selected_lambda <- kcvlasso$lambda[ind_min]
+  
+  # lasso without cross validation
+  set.seed(1997)
+  lasso <- glmnet(x, y,
+                  lambda = selected_lambda,
+                  family = "gaussian",
+                  type.measure = "mse",
+                  penalty.factor = p.fac)
+  
+  lasso_beta <- lasso$beta
+  mrs_coefs <- lasso_beta[grep("chem", rownames(lasso_beta)), "s0"]
+  mrs_coefs <- mrs_coefs[which(mrs_coefs != 0)]
+  
+  return(mrs_coefs)
+}
+
+mrs_coefs <- lasso_selected(dat_list[[1]], chem_columns)
+
+cat("There are ", length(mrs_coefs), " metablites selected into the MRS \n")
+
+coef_list[[outcomes]] <- mrs_coefs
+chem_list[[outcomes]] <- names(mrs_coefs)
+```
+
+### Construct MRS
+```{r}
+compute_mrs <- function(dataset, coef_set){
+  row.names(dataset) <- dataset$SOL_ID
+  tmp <- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) <- outcomes
+  tmp <- data.frame(tmp)
+  tmp$SOL_ID <- rownames(tmp)
+  mrs_b2 <- tmp
+  row.names(mrs_b2) <- NULL
+  return(mrs_b2)
+}
+
+mrs_b2 <- compute_mrs(csv_files[["b2"]], mrs_coefs)
+
+
+# standardize MRS
+
+mrs_b2[, 1] <- as.vector(scale(mrs_b2[, 1]))
+colnames(mrs_b2)[1] <- paste0(outcomes, "_MRS")
+```
+
+### Association Test
+```{r}
+mod <- sol_association_analysis(pheno = pheno, mrs_df = mrs_b2, id_col = "SOL_ID", outcome = outcomes,
+                            cov_names = covariates, family_type = "gaussian")
+```
+
+### store value
+```{r}
+summary_mod <- summary(mod)
+
+# Extract Estimate and Standard Error for the first covariate
+# The first covariate is at position 2 (as position 1 is the intercept)
+estimate_first_covariate <- summary_mod$coefficients[2, "Estimate"]
+stderr_first_covariate <- summary_mod$coefficients[2, "Std. Error"]
+pvalue_first_covariate <- summary_mod$coefficients[2, "Pr(>|t|)"]
+
+# Calculate 95% Confidence Interval
+# Critical value for 95% CI under normal distribution is approximately 1.96
+ci_low <- estimate_first_covariate - (1.96 * stderr_first_covariate)
+ci_high <- estimate_first_covariate + (1.96 * stderr_first_covariate)
+
+# Print the results
+cat("Estimate for the first covariate:", estimate_first_covariate, "\n")
+cat("95% CI for the first covariate: [", ci_low, ",", ci_high, "]\n")
+
+dat_b2 <- merge(csv_files[["b2"]], pheno, by = "SOL_ID")
+dat_b2 <- dat_b2[!is.na(dat_b2[[outcomes]]) & !is.na(dat_b2$AGE_nomed),]
+size_b2 <- nrow(dat_b2)
+
+
+mod_df <- data.frame(Exposures = outcomes, Sample_Size = nrow(dat_list[["dat_b1"]]), Sample_Size_b2 = size_b2, Est = estimate_first_covariate,
+                     CI_Lower = ci_low, CI_Upper = ci_high,
+                     P_Value = pvalue_first_covariate, Metabolites = length(mrs_coefs))
+result_list[[outcomes]] <- mod_df
+```
+
+# SLEA5
+
+## Read data
+```{r}
+
+csv_files <- list()
+
+csv_files[["b1"]] <- readRDS("Processed_metab_b1_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b1"]]), grep("SOL_ID", colnames(csv_files[["b1"]])))
+colnames(csv_files[["b1"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b1"]])[col_chems])
+
+csv_files[["b2"]] <- readRDS("Processed_metab_b2_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b2"]]), grep("SOL_ID", colnames(csv_files[["b2"]])))
+colnames(csv_files[["b2"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b2"]])[col_chems])
+
+rankNorm <- function(x){
+  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
+}
+
+chem_columns <- grep("chem", colnames(csv_files[["b1"]]), value = TRUE)
+
+set.seed(89)
+for (i in 1:length(chem_columns)){
+  chem_i <- chem_columns[i]
+  csv_files[["b1"]][,chem_i] <- rankNorm(csv_files[["b1"]][,chem_i])
+
+  csv_files[["b2"]][,chem_i] <- rankNorm(csv_files[["b2"]][,chem_i])
+}
+
+
+pheno <- read.csv("metsleep_covariates_20200715.csv")
+pheno <- lapply(pheno, function(x) ifelse(x == "", NA, x))
+pheno <- as.data.frame(pheno)
+pheno$SLEA4 <- as.numeric(as.character(pheno$SLEA4))
+pheno$SLEA5 <- as.numeric(as.character(pheno$SLEA5))
+pheno$SLEA6 <- as.numeric(as.character(pheno$SLEA6))
+pheno$SLEA7 <- as.numeric(as.character(pheno$SLEA7))
+
+
+##############################
+####### Outcome Define #######
+
+
+outcomes <- c("SLEA5")
+
+##############################
+##############################
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+covariates <- c("AGE_nomed", "GENDER", "CENTER", "Background")
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+pheno <- pheno[,c(design_vars, outcomes, covariates)]
+pheno <- pheno[!duplicated(pheno$ID),]
+
+pheno$SOL_ID  <- as.character(pheno$ID)
+```
+
+## Batch 1
+
+### Process Data
+```{r}
+dat_list <- list()
+
+dat_list[["dat_b1"]] <- merge(pheno, csv_files[["b1"]], by = "SOL_ID", all.y = TRUE)
+
+chem_columns <- grep("chem", colnames(dat_list[[1]]), value = TRUE)
+
+process_data <- function(data, chem_columns) {
+  data <- data[, c("SOL_ID", outcomes, covariates, chem_columns)]
+  data <- data[complete.cases(data),]
+  data$CENTER <- as.factor(data$CENTER)
+  data$Background <- as.factor(data$Background)
+  return(data)
+}
+dat_list[["dat_b1"]] <- process_data(dat_list[["dat_b1"]], chem_columns)
+```
+
+### LASSO
+```{r}
+lasso_selected <- function(data, chem_columns, outcome = outcomes) {
+  x <- model.matrix(as.formula(paste(outcome, "~", paste(setdiff(colnames(data), c("SOL_ID", outcome)), collapse = "+"))), data = data)
+  y <- data[,outcome]
+  
+  # apply penalty only on metabolites and not on other variables
+  n_chem <- length(chem_columns)
+  p.fac = c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+  
+  # CV
+  set.seed(1997)
+  kcvlasso <- cv.glmnet(x, y, nfolds = 5,
+                        family = "gaussian",
+                        type.measure = "mse",
+                        penalty.factor = p.fac)
+  
+  ind_min <- which.min(kcvlasso$cvm)
+  selected_lambda <- kcvlasso$lambda[ind_min]
+  
+  # lasso without cross validation
+  set.seed(1997)
+  lasso <- glmnet(x, y,
+                  lambda = selected_lambda,
+                  family = "gaussian",
+                  type.measure = "mse",
+                  penalty.factor = p.fac)
+  
+  lasso_beta <- lasso$beta
+  mrs_coefs <- lasso_beta[grep("chem", rownames(lasso_beta)), "s0"]
+  mrs_coefs <- mrs_coefs[which(mrs_coefs != 0)]
+  
+  return(mrs_coefs)
+}
+
+mrs_coefs <- lasso_selected(dat_list[[1]], chem_columns)
+
+cat("There are ", length(mrs_coefs), " metablites selected into the MRS \n")
+
+coef_list[[outcomes]] <- mrs_coefs
+chem_list[[outcomes]] <- names(mrs_coefs)
+```
+
+### Construct MRS
+```{r}
+compute_mrs <- function(dataset, coef_set){
+  row.names(dataset) <- dataset$SOL_ID
+  tmp <- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) <- outcomes
+  tmp <- data.frame(tmp)
+  tmp$SOL_ID <- rownames(tmp)
+  mrs_b2 <- tmp
+  row.names(mrs_b2) <- NULL
+  return(mrs_b2)
+}
+
+mrs_b2 <- compute_mrs(csv_files[["b2"]], mrs_coefs)
+
+
+# standardize MRS
+
+mrs_b2[, 1] <- as.vector(scale(mrs_b2[, 1]))
+colnames(mrs_b2)[1] <- paste0(outcomes, "_MRS")
+```
+
+### Association Test
+```{r}
+mod <- sol_association_analysis(pheno = pheno, mrs_df = mrs_b2, id_col = "SOL_ID", outcome = outcomes,
+                            cov_names = covariates, family_type = "gaussian")
+```
+
+### store value
+```{r}
+summary_mod <- summary(mod)
+
+# Extract Estimate and Standard Error for the first covariate
+# The first covariate is at position 2 (as position 1 is the intercept)
+estimate_first_covariate <- summary_mod$coefficients[2, "Estimate"]
+stderr_first_covariate <- summary_mod$coefficients[2, "Std. Error"]
+pvalue_first_covariate <- summary_mod$coefficients[2, "Pr(>|t|)"]
+
+# Calculate 95% Confidence Interval
+# Critical value for 95% CI under normal distribution is approximately 1.96
+ci_low <- estimate_first_covariate - (1.96 * stderr_first_covariate)
+ci_high <- estimate_first_covariate + (1.96 * stderr_first_covariate)
+
+# Print the results
+cat("Estimate for the first covariate:", estimate_first_covariate, "\n")
+cat("95% CI for the first covariate: [", ci_low, ",", ci_high, "]\n")
+
+dat_b2 <- merge(csv_files[["b2"]], pheno, by = "SOL_ID")
+dat_b2 <- dat_b2[!is.na(dat_b2[[outcomes]]) & !is.na(dat_b2$AGE_nomed),]
+size_b2 <- nrow(dat_b2)
+
+
+mod_df <- data.frame(Exposures = outcomes, Sample_Size = nrow(dat_list[["dat_b1"]]), Sample_Size_b2 = size_b2, Est = estimate_first_covariate,
+                     CI_Lower = ci_low, CI_Upper = ci_high,
+                     P_Value = pvalue_first_covariate, Metabolites = length(mrs_coefs))
+result_list[[outcomes]] <- mod_df
+```
+
+# SLEA6
+
+## Read data
+```{r}
+
+csv_files <- list()
+
+csv_files[["b1"]] <- readRDS("Processed_metab_b1_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b1"]]), grep("SOL_ID", colnames(csv_files[["b1"]])))
+colnames(csv_files[["b1"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b1"]])[col_chems])
+
+csv_files[["b2"]] <- readRDS("Processed_metab_b2_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b2"]]), grep("SOL_ID", colnames(csv_files[["b2"]])))
+colnames(csv_files[["b2"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b2"]])[col_chems])
+
+rankNorm <- function(x){
+  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
+}
+
+chem_columns <- grep("chem", colnames(csv_files[["b1"]]), value = TRUE)
+
+set.seed(89)
+for (i in 1:length(chem_columns)){
+  chem_i <- chem_columns[i]
+  csv_files[["b1"]][,chem_i] <- rankNorm(csv_files[["b1"]][,chem_i])
+
+  csv_files[["b2"]][,chem_i] <- rankNorm(csv_files[["b2"]][,chem_i])
+}
+
+
+pheno <- read.csv("metsleep_covariates_20200715.csv")
+pheno <- lapply(pheno, function(x) ifelse(x == "", NA, x))
+pheno <- as.data.frame(pheno)
+pheno$SLEA4 <- as.numeric(as.character(pheno$SLEA4))
+pheno$SLEA5 <- as.numeric(as.character(pheno$SLEA5))
+pheno$SLEA6 <- as.numeric(as.character(pheno$SLEA6))
+pheno$SLEA7 <- as.numeric(as.character(pheno$SLEA7))
+
+
+##############################
+####### Outcome Define #######
+
+
+outcomes <- c("SLEA6")
+
+##############################
+##############################
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+covariates <- c("AGE_nomed", "GENDER", "CENTER", "Background")
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+pheno <- pheno[,c(design_vars, outcomes, covariates)]
+pheno <- pheno[!duplicated(pheno$ID),]
+
+pheno$SOL_ID  <- as.character(pheno$ID)
+```
+
+## Batch 1
+
+### Process Data
+```{r}
+dat_list <- list()
+
+dat_list[["dat_b1"]] <- merge(pheno, csv_files[["b1"]], by = "SOL_ID", all.y = TRUE)
+
+chem_columns <- grep("chem", colnames(dat_list[[1]]), value = TRUE)
+
+process_data <- function(data, chem_columns) {
+  data <- data[, c("SOL_ID", outcomes, covariates, chem_columns)]
+  data <- data[complete.cases(data),]
+  data$CENTER <- as.factor(data$CENTER)
+  data$Background <- as.factor(data$Background)
+  return(data)
+}
+dat_list[["dat_b1"]] <- process_data(dat_list[["dat_b1"]], chem_columns)
+```
+
+### LASSO
+```{r}
+lasso_selected <- function(data, chem_columns, outcome = outcomes) {
+  x <- model.matrix(as.formula(paste(outcome, "~", paste(setdiff(colnames(data), c("SOL_ID", outcome)), collapse = "+"))), data = data)
+  y <- data[,outcome]
+  
+  # apply penalty only on metabolites and not on other variables
+  n_chem <- length(chem_columns)
+  p.fac = c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+  
+  # CV
+  set.seed(1997)
+  kcvlasso <- cv.glmnet(x, y, nfolds = 5,
+                        family = "gaussian",
+                        type.measure = "mse",
+                        penalty.factor = p.fac)
+  
+  ind_min <- which.min(kcvlasso$cvm)
+  selected_lambda <- kcvlasso$lambda[ind_min]
+  
+  # lasso without cross validation
+  set.seed(1997)
+  lasso <- glmnet(x, y,
+                  lambda = selected_lambda,
+                  family = "gaussian",
+                  type.measure = "mse",
+                  penalty.factor = p.fac)
+  
+  lasso_beta <- lasso$beta
+  mrs_coefs <- lasso_beta[grep("chem", rownames(lasso_beta)), "s0"]
+  mrs_coefs <- mrs_coefs[which(mrs_coefs != 0)]
+  
+  return(mrs_coefs)
+}
+
+mrs_coefs <- lasso_selected(dat_list[[1]], chem_columns)
+
+cat("There are ", length(mrs_coefs), " metablites selected into the MRS \n")
+
+coef_list[[outcomes]] <- mrs_coefs
+chem_list[[outcomes]] <- names(mrs_coefs)
+```
+
+### Construct MRS
+```{r}
+compute_mrs <- function(dataset, coef_set){
+  row.names(dataset) <- dataset$SOL_ID
+  tmp <- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) <- outcomes
+  tmp <- data.frame(tmp)
+  tmp$SOL_ID <- rownames(tmp)
+  mrs_b2 <- tmp
+  row.names(mrs_b2) <- NULL
+  return(mrs_b2)
+}
+
+mrs_b2 <- compute_mrs(csv_files[["b2"]], mrs_coefs)
+
+
+# standardize MRS
+
+mrs_b2[, 1] <- as.vector(scale(mrs_b2[, 1]))
+colnames(mrs_b2)[1] <- paste0(outcomes, "_MRS")
+```
+
+### Association Test
+```{r}
+mod <- sol_association_analysis(pheno = pheno, mrs_df = mrs_b2, id_col = "SOL_ID", outcome = outcomes,
+                            cov_names = covariates, family_type = "gaussian")
+```
+
+### store value
+```{r}
+summary_mod <- summary(mod)
+
+# Extract Estimate and Standard Error for the first covariate
+# The first covariate is at position 2 (as position 1 is the intercept)
+estimate_first_covariate <- summary_mod$coefficients[2, "Estimate"]
+stderr_first_covariate <- summary_mod$coefficients[2, "Std. Error"]
+pvalue_first_covariate <- summary_mod$coefficients[2, "Pr(>|t|)"]
+
+# Calculate 95% Confidence Interval
+# Critical value for 95% CI under normal distribution is approximately 1.96
+ci_low <- estimate_first_covariate - (1.96 * stderr_first_covariate)
+ci_high <- estimate_first_covariate + (1.96 * stderr_first_covariate)
+
+# Print the results
+cat("Estimate for the first covariate:", estimate_first_covariate, "\n")
+cat("95% CI for the first covariate: [", ci_low, ",", ci_high, "]\n")
+
+dat_b2 <- merge(csv_files[["b2"]], pheno, by = "SOL_ID")
+dat_b2 <- dat_b2[!is.na(dat_b2[[outcomes]]) & !is.na(dat_b2$AGE_nomed),]
+size_b2 <- nrow(dat_b2)
+
+
+mod_df <- data.frame(Exposures = outcomes, Sample_Size = nrow(dat_list[["dat_b1"]]), Sample_Size_b2 = size_b2, Est = estimate_first_covariate,
+                     CI_Lower = ci_low, CI_Upper = ci_high,
+                     P_Value = pvalue_first_covariate, Metabolites = length(mrs_coefs))
+result_list[[outcomes]] <- mod_df
+```
+
+# SLEA7
+
+## Read data
+```{r}
+
+csv_files <- list()
+
+csv_files[["b1"]] <- readRDS("Processed_metab_b1_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b1"]]), grep("SOL_ID", colnames(csv_files[["b1"]])))
+colnames(csv_files[["b1"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b1"]])[col_chems])
+
+csv_files[["b2"]] <- readRDS("Processed_metab_b2_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b2"]]), grep("SOL_ID", colnames(csv_files[["b2"]])))
+colnames(csv_files[["b2"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b2"]])[col_chems])
+
+rankNorm <- function(x){
+  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
+}
+
+chem_columns <- grep("chem", colnames(csv_files[["b1"]]), value = TRUE)
+
+set.seed(89)
+for (i in 1:length(chem_columns)){
+  chem_i <- chem_columns[i]
+  csv_files[["b1"]][,chem_i] <- rankNorm(csv_files[["b1"]][,chem_i])
+
+  csv_files[["b2"]][,chem_i] <- rankNorm(csv_files[["b2"]][,chem_i])
+}
+
+
+pheno <- read.csv("metsleep_covariates_20200715.csv")
+pheno <- lapply(pheno, function(x) ifelse(x == "", NA, x))
+pheno <- as.data.frame(pheno)
+pheno$SLEA4 <- as.numeric(as.character(pheno$SLEA4))
+pheno$SLEA5 <- as.numeric(as.character(pheno$SLEA5))
+pheno$SLEA6 <- as.numeric(as.character(pheno$SLEA6))
+pheno$SLEA7 <- as.numeric(as.character(pheno$SLEA7))
+
+
+##############################
+####### Outcome Define #######
+
+
+outcomes <- c("SLEA7")
+
+##############################
+##############################
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+covariates <- c("AGE_nomed", "GENDER", "CENTER", "Background")
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+pheno <- pheno[,c(design_vars, outcomes, covariates)]
+pheno <- pheno[!duplicated(pheno$ID),]
+
+pheno$SOL_ID  <- as.character(pheno$ID)
+```
+
+## Batch 1
+
+### Process Data
+```{r}
+dat_list <- list()
+
+dat_list[["dat_b1"]] <- merge(pheno, csv_files[["b1"]], by = "SOL_ID", all.y = TRUE)
+
+chem_columns <- grep("chem", colnames(dat_list[[1]]), value = TRUE)
+
+process_data <- function(data, chem_columns) {
+  data <- data[, c("SOL_ID", outcomes, covariates, chem_columns)]
+  data <- data[complete.cases(data),]
+  data$CENTER <- as.factor(data$CENTER)
+  data$Background <- as.factor(data$Background)
+  return(data)
+}
+dat_list[["dat_b1"]] <- process_data(dat_list[["dat_b1"]], chem_columns)
+```
+
+### LASSO
+```{r}
+lasso_selected <- function(data, chem_columns, outcome = outcomes) {
+  x <- model.matrix(as.formula(paste(outcome, "~", paste(setdiff(colnames(data), c("SOL_ID", outcome)), collapse = "+"))), data = data)
+  y <- data[,outcome]
+  
+  # apply penalty only on metabolites and not on other variables
+  n_chem <- length(chem_columns)
+  p.fac = c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+  
+  # CV
+  set.seed(1997)
+  kcvlasso <- cv.glmnet(x, y, nfolds = 5,
+                        family = "gaussian",
+                        type.measure = "mse",
+                        penalty.factor = p.fac)
+  
+  ind_min <- which.min(kcvlasso$cvm)
+  selected_lambda <- kcvlasso$lambda[ind_min]
+  
+  # lasso without cross validation
+  set.seed(1997)
+  lasso <- glmnet(x, y,
+                  lambda = selected_lambda,
+                  family = "gaussian",
+                  type.measure = "mse",
+                  penalty.factor = p.fac)
+  
+  lasso_beta <- lasso$beta
+  mrs_coefs <- lasso_beta[grep("chem", rownames(lasso_beta)), "s0"]
+  mrs_coefs <- mrs_coefs[which(mrs_coefs != 0)]
+  
+  return(mrs_coefs)
+}
+
+mrs_coefs <- lasso_selected(dat_list[[1]], chem_columns)
+
+cat("There are ", length(mrs_coefs), " metablites selected into the MRS \n")
+
+coef_list[[outcomes]] <- mrs_coefs
+chem_list[[outcomes]] <- names(mrs_coefs)
+```
+
+### Construct MRS
+```{r}
+compute_mrs <- function(dataset, coef_set){
+  row.names(dataset) <- dataset$SOL_ID
+  tmp <- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) <- outcomes
+  tmp <- data.frame(tmp)
+  tmp$SOL_ID <- rownames(tmp)
+  mrs_b2 <- tmp
+  row.names(mrs_b2) <- NULL
+  return(mrs_b2)
+}
+
+mrs_b2 <- compute_mrs(csv_files[["b2"]], mrs_coefs)
+
+
+# standardize MRS
+
+mrs_b2[, 1] <- as.vector(scale(mrs_b2[, 1]))
+colnames(mrs_b2)[1] <- paste0(outcomes, "_MRS")
+```
+
+### Association Test
+```{r}
+mod <- sol_association_analysis(pheno = pheno, mrs_df = mrs_b2, id_col = "SOL_ID", outcome = outcomes,
+                            cov_names = covariates, family_type = "gaussian")
+```
+
+### store value
+```{r}
+summary_mod <- summary(mod)
+
+# Extract Estimate and Standard Error for the first covariate
+# The first covariate is at position 2 (as position 1 is the intercept)
+estimate_first_covariate <- summary_mod$coefficients[2, "Estimate"]
+stderr_first_covariate <- summary_mod$coefficients[2, "Std. Error"]
+pvalue_first_covariate <- summary_mod$coefficients[2, "Pr(>|t|)"]
+
+# Calculate 95% Confidence Interval
+# Critical value for 95% CI under normal distribution is approximately 1.96
+ci_low <- estimate_first_covariate - (1.96 * stderr_first_covariate)
+ci_high <- estimate_first_covariate + (1.96 * stderr_first_covariate)
+
+# Print the results
+cat("Estimate for the first covariate:", estimate_first_covariate, "\n")
+cat("95% CI for the first covariate: [", ci_low, ",", ci_high, "]\n")
+
+dat_b2 <- merge(csv_files[["b2"]], pheno, by = "SOL_ID")
+dat_b2 <- dat_b2[!is.na(dat_b2[[outcomes]]) & !is.na(dat_b2$AGE_nomed),]
+size_b2 <- nrow(dat_b2)
+
+
+mod_df <- data.frame(Exposures = outcomes, Sample_Size = nrow(dat_list[["dat_b1"]]), Sample_Size_b2 = size_b2, Est = estimate_first_covariate,
+                     CI_Lower = ci_low, CI_Upper = ci_high,
+                     P_Value = pvalue_first_covariate, Metabolites = length(mrs_coefs))
+result_list[[outcomes]] <- mod_df
+```
+
+
+
+# SLEA11
+
+## Read data
+```{r}
+
+csv_files <- list()
+
+csv_files[["b1"]] <- readRDS("Processed_metab_b1_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b1"]]), grep("SOL_ID", colnames(csv_files[["b1"]])))
+colnames(csv_files[["b1"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b1"]])[col_chems])
+
+csv_files[["b2"]] <- readRDS("Processed_metab_b2_updated.RDS")
+col_chems <- setdiff(1:ncol(csv_files[["b2"]]), grep("SOL_ID", colnames(csv_files[["b2"]])))
+colnames(csv_files[["b2"]])[col_chems] <- paste0("chem_", colnames(csv_files[["b2"]])[col_chems])
+
+rankNorm <- function(x){
+  qnorm((rank(x, ties.method = "random", na.last = "keep")-0.5)/length(!is.na(x)))
+}
+
+chem_columns <- grep("chem", colnames(csv_files[["b1"]]), value = TRUE)
+
+set.seed(89)
+for (i in 1:length(chem_columns)){
+  chem_i <- chem_columns[i]
+  csv_files[["b1"]][,chem_i] <- rankNorm(csv_files[["b1"]][,chem_i])
+
+  csv_files[["b2"]][,chem_i] <- rankNorm(csv_files[["b2"]][,chem_i])
+}
+
+
+pheno <- read.csv("metsleep_covariates_20200715.csv")
+pheno <- lapply(pheno, function(x) ifelse(x == "", NA, x))
+pheno <- as.data.frame(pheno)
+pheno$SLEA4 <- as.numeric(as.character(pheno$SLEA4))
+pheno$SLEA5 <- as.numeric(as.character(pheno$SLEA5))
+pheno$SLEA6 <- as.numeric(as.character(pheno$SLEA6))
+pheno$SLEA7 <- as.numeric(as.character(pheno$SLEA7))
+pheno$SLEA11 <- as.numeric(as.character(pheno$SLEA11))
+
+
+##############################
+####### Outcome Define #######
+
+
+outcomes <- c("SLEA11")
+
+##############################
+##############################
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+covariates <- c("AGE_nomed", "GENDER", "CENTER", "Background")
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+pheno <- pheno[,c(design_vars, outcomes, covariates)]
+pheno <- pheno[!duplicated(pheno$ID),]
+
+pheno$SOL_ID  <- as.character(pheno$ID)
+```
+
+## Batch 1
+
+### Process Data
+```{r}
+dat_list <- list()
+
+dat_list[["dat_b1"]] <- merge(pheno, csv_files[["b1"]], by = "SOL_ID", all.y = TRUE)
+
+chem_columns <- grep("chem", colnames(dat_list[[1]]), value = TRUE)
+
+process_data <- function(data, chem_columns) {
+  data <- data[, c("SOL_ID", outcomes, covariates, chem_columns)]
+  data <- data[complete.cases(data),]
+  data$CENTER <- as.factor(data$CENTER)
+  data$Background <- as.factor(data$Background)
+  return(data)
+}
+dat_list[["dat_b1"]] <- process_data(dat_list[["dat_b1"]], chem_columns)
+```
+
+### LASSO
+```{r}
+lasso_selected <- function(data, chem_columns, outcome = outcomes) {
+  x <- model.matrix(as.formula(paste(outcome, "~", paste(setdiff(colnames(data), c("SOL_ID", outcome)), collapse = "+"))), data = data)
+  y <- data[,outcome]
+  
+  # apply penalty only on metabolites and not on other variables
+  n_chem <- length(chem_columns)
+  p.fac = c(rep(0, ncol(x) - n_chem), rep(1, n_chem))
+  
+  # CV
+  set.seed(1997)
+  kcvlasso <- cv.glmnet(x, y, nfolds = 5,
+                        family = "gaussian",
+                        type.measure = "mse",
+                        penalty.factor = p.fac)
+  
+  ind_min <- which.min(kcvlasso$cvm)
+  selected_lambda <- kcvlasso$lambda[ind_min]
+  
+  # lasso without cross validation
+  set.seed(1997)
+  lasso <- glmnet(x, y,
+                  lambda = selected_lambda,
+                  family = "gaussian",
+                  type.measure = "mse",
+                  penalty.factor = p.fac)
+  
+  lasso_beta <- lasso$beta
+  mrs_coefs <- lasso_beta[grep("chem", rownames(lasso_beta)), "s0"]
+  mrs_coefs <- mrs_coefs[which(mrs_coefs != 0)]
+  
+  return(mrs_coefs)
+}
+
+mrs_coefs <- lasso_selected(dat_list[[1]], chem_columns)
+
+cat("There are ", length(mrs_coefs), " metablites selected into the MRS \n")
+
+coef_list[[outcomes]] <- mrs_coefs
+chem_list[[outcomes]] <- names(mrs_coefs)
+```
+
+### Construct MRS
+```{r}
+compute_mrs <- function(dataset, coef_set){
+  row.names(dataset) <- dataset$SOL_ID
+  tmp <- as.matrix(dataset[, names(coef_set)]) %*% coef_set
+  colnames(tmp) <- outcomes
+  tmp <- data.frame(tmp)
+  tmp$SOL_ID <- rownames(tmp)
+  mrs_b2 <- tmp
+  row.names(mrs_b2) <- NULL
+  return(mrs_b2)
+}
+
+mrs_b2 <- compute_mrs(csv_files[["b2"]], mrs_coefs)
+
+
+# standardize MRS
+
+mrs_b2[, 1] <- as.vector(scale(mrs_b2[, 1]))
+colnames(mrs_b2)[1] <- paste0(outcomes, "_MRS")
+```
+
+### Association Test
+```{r}
+mod <- sol_association_analysis(pheno = pheno, mrs_df = mrs_b2, id_col = "SOL_ID", outcome = outcomes,
+                            cov_names = covariates, family_type = "gaussian")
+```
+
+### store value
+```{r}
+summary_mod <- summary(mod)
+
+# Extract Estimate and Standard Error for the first covariate
+# The first covariate is at position 2 (as position 1 is the intercept)
+estimate_first_covariate <- summary_mod$coefficients[2, "Estimate"]
+stderr_first_covariate <- summary_mod$coefficients[2, "Std. Error"]
+pvalue_first_covariate <- summary_mod$coefficients[2, "Pr(>|t|)"]
+
+# Calculate 95% Confidence Interval
+# Critical value for 95% CI under normal distribution is approximately 1.96
+ci_low <- estimate_first_covariate - (1.96 * stderr_first_covariate)
+ci_high <- estimate_first_covariate + (1.96 * stderr_first_covariate)
+
+# Print the results
+cat("Estimate for the first covariate:", estimate_first_covariate, "\n")
+cat("95% CI for the first covariate: [", ci_low, ",", ci_high, "]\n")
+
+dat_b2 <- merge(csv_files[["b2"]], pheno, by = "SOL_ID")
+dat_b2 <- dat_b2[!is.na(dat_b2[[outcomes]]) & !is.na(dat_b2$AGE_nomed),]
+size_b2 <- nrow(dat_b2)
+
+
+mod_df <- data.frame(Exposures = outcomes, Sample_Size = nrow(dat_list[["dat_b1"]]), Sample_Size_b2 = size_b2, Est = estimate_first_covariate,
+                     CI_Lower = ci_low, CI_Upper = ci_high,
+                     P_Value = pvalue_first_covariate, Metabolites = length(mrs_coefs))
+result_list[[outcomes]] <- mod_df
+```
+
+# Table
+```{r}
+tab_temp <- do.call(rbind, result_list)
+tab_report <- tab_temp %>%
+  mutate(
+    Est = round(Est, 4),
+    CI = paste0("[", round(CI_Lower, 4), ", ", round(CI_Upper, 4), "]"),
+    P_Value = sprintf("%.4e", P_Value)
+  ) %>%
+  select(Exposures, Sample_Size, Sample_Size_b2, Est, CI, P_Value, Metabolites) # Reorder columns
+
+write.csv(tab_report, "Results/20240616_MRS_results_M1_nomed_Ranked_V3.csv", row.names = FALSE)
+saveRDS(tab_temp, "Results/20240616_MRS_forPlot_M1_nomed_Ranked_V2.RDS")
+```
+
+
+# Upset Diagram
+```{r}
+count_list <- list()
+labels <- c()
+for (i in names(chem_list)) {
+  count_list[[i]] <- length(chem_list[[i]])
+  labels <- c(labels, paste(i, "(n=", count_list[[i]], ")", sep = ""))
+}
+
+all_chemicals <- sort(unique(unlist(chem_list)))
+binary_data <- sapply(chem_list, function(set, all_chems) {
+    as.integer(all_chems %in% set)
+}, all_chems = all_chemicals)
+colnames(binary_data) <- names(chem_list)
+binary_df <- as.data.frame(binary_data)
+binary_df$chemicals <- all_chemicals
+
+upset_plot <- upset(binary_df, sets = names(chem_list), text.scale = c(2, 2, 2, 2, 2, 2))
+#saveRDS(binary_df, "Results/20240312_MRS_Metabolites_Overlap_M1_nomed_Ranked.RDS")
+```
+
+
+# Coef Table
+```{r}
+coef_table_list <- list()
+for (i in names(coef_list)) {
+  tab_temp <- as.data.frame(coef_list[[i]])
+  colnames(tab_temp) <- i
+  tab_temp <- data.frame('CHEM_ID' = rownames(tab_temp), tab_temp)
+  rownames(tab_temp) <- NULL
+  coef_table_list[[i]] <- tab_temp
+}
+
+
+chem_id <- chem_columns
+com_mat <- data.frame(CHEM_ID = chem_id)
+
+metab_batch2_file <- file.path("batch2_data.xlsx")
+metabolites_info_sheet_name <- "metabolites.info"
+
+metab_info <- as.data.frame(read_excel(metab_batch2_file, sheet = metabolites_info_sheet_name))
+metab_info$CHEM_ID <- paste0("chem_", metab_info$CHEM_ID)
+
+com_mat <- merge(com_mat, metab_info[,c("CHEM_ID","CHEMICAL_NAME", "HMDB")], 
+                    by = "CHEM_ID")
+
+
+com_mat <- reduce(coef_table_list, ~left_join(.x, .y, by = "CHEM_ID"), .init = com_mat)
+com_mat[, 4:ncol(com_mat)][is.na(com_mat[, 4:ncol(com_mat)])] <- 0
+write.csv(com_mat, "Results/20240616_MRS_Coef_M1_nomed_Ranked_V2.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
