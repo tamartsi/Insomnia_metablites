@@ -1,0 +1,359 @@
+---
+title: "11_Secondary_Analysis_and_Figure_2_Revised"
+author: "Yu Zhang"
+output:
+  md_document:
+    variant: markdown_github
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Load packages}
+library(tidyverse)
+library(survey)
+library(readxl)
+library(haven)
+library(grid)
+library(forestploter)
+```
+
+
+```{r}
+reped_chem <- c("chem_100000010", "chem_100001083")
+```
+
+
+
+# Read files with phenotypes and metabolomics
+
+```{r}
+metab_file_b1 <- "Processed_metab_b1_updated.RDS"
+metab_file_b2 <- "Processed_metab_b2_updated.RDS"
+pheno_file <- "metsleep_covariates_20200715.csv"
+
+metab_b1 <- readRDS(metab_file_b1)
+metab_b2 <- readRDS(metab_file_b2)
+pheno <- read.csv(pheno_file)
+
+all(colnames(metab_b1) == colnames(metab_b2))
+# update column names in metabolites data:
+# (indexing in an inefficient way)
+col_chems <- setdiff(1:ncol(metab_b1), grep("SOL_ID", colnames(metab_b1)))
+colnames(metab_b1)[col_chems] <- colnames(metab_b2)[col_chems] <- paste0("chem_", colnames(metab_b1)[col_chems])
+```
+
+# Subset phenotypes as necessary and merge with metabolites
+```{r}
+pheno$Insomnia <- ifelse(pheno$WHIIRS >= 9, 1, 0)
+exposures <- c("Insomnia", "WHIIRS", "SLEA4", "SLEA5", "SLEA6", "SLEA7", "SLEA11")
+
+
+pheno$CENTER <- factor(pheno$CENTER)
+pheno$GENDER <- factor(pheno$GENDER)
+pheno$Background <- factor(pheno$BKGRD1_C7)
+
+pheno$AGE_nomed <- pheno$AGE
+pheno$AGE_nomed[which(pheno$SLEA8 != 1)] <- NA
+
+covariates <- list(
+  M1 = c("AGE", "GENDER", "CENTER", "Background"),
+  M2 = c("AGE", "GENDER", "CENTER", "Background", "HYPERTENSION", "DIABETES2_INDICATOR"),
+  M3 = c("AGE", "GENDER", "CENTER", "Background", "HYPERTENSION", "DIABETES2_INDICATOR", "AHEI2010", "CIGARETTE_USE", "ALCOHOL_USE"),
+  M1_nomed = c("AGE_nomed", "GENDER", "CENTER", "Background"),
+  M4 = c("AGE", "GENDER", "CENTER", "Background", "HYPERTENSION", "DIABETES2_INDICATOR", "AHEI2010", "CIGARETTE_USE", "ALCOHOL_USE", "Caffeine", "FASTTIME")
+)
+
+design_vars <- c("ID", "STRAT", "PSU_ID", "WEIGHT_FINAL_NORM_OVERALL")
+
+# pheno <- pheno[,c(design_vars, exposures, covariates)]
+pheno <- pheno[!duplicated(pheno$ID), ]
+nrow(pheno)
+
+# turn SLEA4/5/6/7 to numeric variables:**
+pheno$SLEA4 <- as.numeric(as.character(pheno$SLEA4))
+pheno$SLEA5 <- as.numeric(as.character(pheno$SLEA5))
+pheno$SLEA6 <- as.numeric(as.character(pheno$SLEA6))
+pheno$SLEA7 <- as.numeric(as.character(pheno$SLEA7))
+pheno$SLEA11 <- as.numeric(as.character(pheno$SLEA11))
+
+# merge with metabolites
+# we need to have the same name of ID column
+# keep all individuals so that we can properly use the survey package and account for study design
+pheno$SOL_ID <- as.character(pheno$ID)
+
+# Add caffeine intake
+caf_pheno <- read_sas("Data/diea_inv4.sas7bdat")
+caf_pheno <- as.data.frame(caf_pheno)
+caf_pheno$SOL_ID <- as.character(as.numeric(caf_pheno$ID))
+caf_pheno <- caf_pheno[, c("SOL_ID", "RECALLNUM", "DIEA110")]
+
+temp_pheno <- caf_pheno %>%
+  group_by(SOL_ID, RECALLNUM) %>%
+  summarise(Caffeine = sum(DIEA110, na.rm = TRUE)) %>%
+  group_by(SOL_ID) %>%
+  summarise(Caffeine = mean(Caffeine, na.rm = TRUE))
+
+pheno <- merge(pheno, temp_pheno, by = "SOL_ID", all.x = TRUE)
+
+# Add fasting time
+sub_pheno <- read_sas("Data/part_derv_inv4.sas7bdat")
+sub_pheno <- as.data.frame(sub_pheno)
+sub_pheno$SOL_ID <- as.character(as.numeric(sub_pheno$ID))
+
+sub_pheno <- sub_pheno[, c("SOL_ID", "FASTTIME")]
+sub_pheno <- sub_pheno %>%
+  mutate(FASTTIME = if_else(FASTTIME >= 21 & FASTTIME <= 30, FASTTIME - 12, FASTTIME))
+sub_pheno$FASTTIME[sub_pheno$FASTTIME < 10 | sub_pheno$FASTTIME > 30] <- NA
+
+pheno <- merge(pheno, sub_pheno, by = "SOL_ID", all.x = TRUE)
+
+dat_b1 <- merge(pheno, metab_b1, by = "SOL_ID", all = TRUE)
+dat_b2 <- merge(pheno, metab_b2, by = "SOL_ID", all = TRUE)
+nrow(dat_b1)
+nrow(dat_b2)
+```
+
+# rank-normalize metabolite values
+
+```{r}
+chem_columns <- grep("chem", colnames(dat_b1), value = TRUE)
+
+rankNorm <- function(x) {
+  qnorm((rank(x, ties.method = "random", na.last = "keep") - 0.5) / length(!is.na(x)))
+}
+
+set.seed(89)
+for (i in 1:length(chem_columns)) {
+  chem_i <- chem_columns[i]
+  dat_b1[, chem_i] <- rankNorm(dat_b1[, chem_i])
+
+  dat_b2[, chem_i] <- rankNorm(dat_b2[, chem_i])
+  metab_b1[, chem_i] <- rankNorm(metab_b1[, chem_i])
+  metab_b2[, chem_i] <- rankNorm(metab_b2[, chem_i])
+}
+
+metab_comb <- rbind(metab_b1, metab_b2)
+
+dat_comb <- merge(pheno, metab_comb, by = "SOL_ID", all = TRUE)
+```
+
+
+```{r}
+ass_result <- list()
+```
+
+
+# create survey design object and perform regression
+
+
+```{r}
+for (batch in c("comb")) {
+  for (exposure in exposures) {
+    dat_b1$keep <- ifelse(!is.na(dat_b1[[exposure]]) & !is.na(dat_b1$chem_35), 1, 0)
+    dat_b2$keep <- ifelse(!is.na(dat_b2[[exposure]]) & !is.na(dat_b2$chem_35), 1, 0)
+    dat_comb$keep <- ifelse(!is.na(dat_comb[[exposure]]) & !is.na(dat_comb$chem_35), 1, 0)
+
+    if (batch == "b1") {
+      survey_base <- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_b1
+      )
+    }
+
+    if (batch == "b2") {
+      survey_base <- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_b2
+      )
+    }
+
+    if (batch == "comb") {
+      survey_base <- svydesign(
+        id = ~PSU_ID, strata = ~STRAT,
+        weights = ~WEIGHT_FINAL_NORM_OVERALL,
+        data = dat_comb
+      )
+    }
+
+    survey_base <- subset(survey_base, keep == 1)
+
+    for (model in c("M1", "M2", "M3", "M1_nomed", "M4")) {
+      res_list <- vector(mode = "list", length = length(chem_columns))
+
+      for (i in 1:length(reped_chem)) {
+        chem_i <- reped_chem[i]
+
+        model_formula_i <- paste0(chem_i, " ~ ", exposure, "+", paste(covariates[[model]], collapse = "+"))
+
+        mod_i <- svyglm(as.formula(model_formula_i),
+          design = survey_base,
+          na.action = na.omit,
+          family = "gaussian"
+        )
+
+        assoc_i <- summary(mod_i)$coef[exposure, ]
+
+        res_list[[i]] <- data.frame(
+          Chem_ID = chem_i,
+          n = nrow(model.matrix(mod_i)),
+          Est = assoc_i["Estimate"],
+          SE = assoc_i["Std. Error"],
+          pval = assoc_i["Pr(>|t|)"]
+        )
+      }
+
+      res_exposures <- do.call(rbind, res_list)
+      res_exposures$FDR_p <- p.adjust(res_exposures$pval, "BH")
+
+      name <- paste0(exposure, "_", batch, "_", model)
+
+      ass_result[[name]] <- res_exposures
+    }
+  }
+}
+```
+
+
+```{r}
+combined_df <- do.call(rbind, lapply(names(ass_result), function(name) {
+  df <- ass_result[[name]]
+  df$Model <- name
+  return(df)
+}))
+
+rownames(combined_df) <- NULL
+
+metab_batch2_file <- file.path("batch2_data.xlsx")
+metabolites_info_sheet_name <- "metabolites.info"
+
+metab_info <- as.data.frame(read_excel(metab_batch2_file, sheet = metabolites_info_sheet_name))
+metab_info$CHEM_ID <- paste0("chem_", metab_info$CHEM_ID)
+metab_info <- metab_info[, c("CHEM_ID", "CHEMICAL_NAME")]
+names(metab_info)[1] <- "Chem_ID"
+
+merged_results <- lapply(ass_result, function(df) merge(df, metab_info, by = "Chem_ID"))
+
+combined_df <- do.call(rbind, lapply(names(merged_results), function(name) {
+  df <- merged_results[[name]]
+  df$Model <- name
+  return(df)
+}))
+
+
+combined_df <- subset(combined_df, select = -Chem_ID)
+combined_df <- combined_df[c(6, 7, 1:5)]
+
+raw_tab <- combined_df
+```
+
+# Add CI
+```{r}
+raw_tab$CI_Lower <- raw_tab$Est - 1.96 * raw_tab$SE
+raw_tab$CI_Upper <- raw_tab$Est + 1.96 * raw_tab$SE
+```
+
+# remove unused col
+```{r}
+mid_tab <- subset(raw_tab, select = c("CHEMICAL_NAME", "Model", "Est",
+                                      "CI_Lower", "CI_Upper"))
+mid_tab <- mid_tab %>%
+  separate(col = Model, into = c("Exposure", "Model_new"), sep = "_comb_", remove = FALSE)
+mid_tab <- subset(mid_tab, select = -Model)
+colnames(mid_tab)[colnames(mid_tab) == "Model_new"] <- "Model"
+plot_tab <- mid_tab[mid_tab$Exposure %in% c("Insomnia", "WHIIRS"), ]
+plot_tab$CHEMICAL_NAME <- as.factor(plot_tab$CHEMICAL_NAME)
+```
+
+# Plot
+## Subset to WHIIRS
+```{r}
+sub_tab <- raw_tab %>%
+  separate(col = Model, into = c("Exposure", "Model_new"), sep = "_comb_", remove = FALSE)
+
+sub_tab <- subset(sub_tab, select = -Model)
+colnames(sub_tab)[colnames(sub_tab) == "Model_new"] <- "Model"
+
+sub_tab <- sub_tab[sub_tab$Exposure == "WHIIRS", ]
+```
+
+## process table
+```{r}
+sub_tab <- subset(sub_tab, select = c("CHEMICAL_NAME", "Model", "n", "Est", "SE",
+                                      "pval", "CI_Lower", "CI_Upper"))
+sub_tab <- sub_tab[order(sub_tab$CHEMICAL_NAME),]
+sub_tab[c(4, 5), ] <- sub_tab[c(5, 4), ]
+sub_tab[c(9, 10), ] <- sub_tab[c(10, 9), ]
+
+sub_tab <- sub_tab %>% 
+  split(.$CHEMICAL_NAME) %>% 
+  purrr::map(~add_row(.,CHEMICAL_NAME=unique(.$CHEMICAL_NAME))) %>% 
+  bind_rows()
+
+sub_tab<- sub_tab %>% add_row(CHEMICAL_NAME= "3-phenylpropionate (hydrocinnamate)",.before = 1)
+
+sub_tab[7,1] <- sub_tab[8,1]
+
+sub_tab <- sub_tab[-nrow(sub_tab),]
+
+sub_tab$CHEMICAL_NAME <- ifelse(is.na(sub_tab$Model), 
+                      sub_tab$CHEMICAL_NAME,
+                      paste0("        ", sub_tab$Model))
+colnames(sub_tab)[1] <- "Metabolite & Model"
+
+sub_tab <- subset(sub_tab, select = -Model)
+
+
+sub_tab$n <- ifelse(is.na(sub_tab$n), "", sub_tab$n)
+
+sub_tab$` ` <- paste(rep("      ", 10), collapse = " ")
+
+sub_tab$`Est (95% CI)` <- ifelse(is.na(sub_tab$Est), "",
+                             paste0(sprintf("%.3f (%.3f, %.3f)",
+                                     sub_tab$Est, sub_tab$CI_Lower, sub_tab$CI_Upper)," "))
+
+sub_tab$pval <- formatC(sub_tab$pval, format="e", digits=2)
+
+sub_tab$`P-Value` <- ifelse(is.na(sub_tab$Est), "", sub_tab$pval)
+
+colnames(sub_tab)[2] <- "Sample Size"
+```
+
+## Figure generation
+```{r}
+tm <- forest_theme(base_size = 15,
+                   # Confidence interval point shape, line type/color/width
+                   ci_pch = 19,
+                   ci_col = c("black"),
+                   ci_fill = "black",
+                   ci_alpha = 1,
+                   ci_lty = 1,
+                   ci_lwd = 2,
+                   ci_Theight = 0.3, # Set a T end at the end of CI 
+                   # Reference line width/type/color
+                   refline_lwd = gpar(lwd = 1, lty = "dashed", col = "grey20"),
+                   # Vertical line width/type/color
+                   vertline_lwd = 1,
+                   vertline_lty = "dashed",
+                   vertline_col = "grey20",
+                   # Change summary color for filling and borders
+                   summary_fill = "#4575b4",
+                   summary_col = "#4575b4",
+                   # Footnote font size/face/color
+                   footnote_gp = gpar(cex = 0.6, fontface = "italic", col = "blue"))
+
+
+
+p <- forest(sub_tab[,c(1,2, 8:10)],
+            est = sub_tab$Est,
+            lower = sub_tab$CI_Lower, 
+            upper = sub_tab$CI_Upper,
+            sizes = 0.5,
+            ci_column = 3,
+            ref_line = 0,
+            theme = tm)
+```
